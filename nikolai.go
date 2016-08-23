@@ -16,21 +16,49 @@ const (
 	retainSnapshotCount = 2
 )
 
-type Node struct {
-	clientAddr   string
-	raftAddr     string
-	mu           sync.Mutex
-	clientServer *redcon.Server
-	db           *buntdb.DB
-	ps           *peerStore
-	ss           *stableStore
-	ls           *logStore
-	snaps        raft.SnapshotStore
-	trans        raft.Transport
-	raft         *raft.Raft
+type Options struct {
+	// Logger is a custom Nikolai Logger
+	Logger *Logger
 }
 
-func Open(dir, addr, join string) (*Node, error) {
+func fillOptions(opts *Options) *Options {
+	if opts == nil {
+		opts = &Options{}
+	}
+	// copy and reassign the options
+	nopts := *opts
+	if nopts.Logger == nil {
+		nopts.Logger = NewLogger(os.Stderr)
+	}
+	return &nopts
+}
+
+type Node struct {
+	mu           sync.RWMutex
+	clientAddr   string
+	raftAddr     string
+	clientServer *redcon.Server
+	db           *buntdb.DB
+	peers        *peerStore
+	stable       *stableStore
+	logs         *logStore
+	snapshot     raft.SnapshotStore
+	trans        raft.Transport
+	raft         *raft.Raft
+	log          *Logger
+}
+
+func Open(dir, addr, join string, opts *Options) (node *Node, err error) {
+	opts = fillOptions(opts)
+
+	//
+	defer func() {
+		if err != nil {
+			opts.Logger.Logf('!', "%v", err)
+		}
+	}()
+
+	// create the directory
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -42,14 +70,15 @@ func Open(dir, addr, join string) (*Node, error) {
 
 	// create a node and assign it some fields
 	n := &Node{
-		db: db,
-		ps: (*peerStore)(db),
-		ss: (*stableStore)(db),
-		ls: (*logStore)(db),
+		db:     db,
+		peers:  &peerStore{db: db},
+		stable: &stableStore{db: db},
+		logs:   &logStore{db: db},
+		log:    opts.Logger,
 	}
 
 	// get the peer list
-	peers, err := n.ps.Peers()
+	peers, err := n.peers.Peers()
 	if err != nil {
 		n.Close()
 		return nil, err
@@ -57,16 +86,18 @@ func Open(dir, addr, join string) (*Node, error) {
 
 	// Setup Raft configuration.
 	config := raft.DefaultConfig()
+	config.LogOutput = n.log
 
 	// Allow the node to entry single-mode, potentially electing itself, if
 	// explicitly enabled and there is only 1 node in the cluster already.
 	if join == "" && len(peers) <= 1 {
+		n.log.Logf('*', "Enable single node mode")
 		config.EnableSingleNode = true
 		config.DisableBootstrapAfterElect = false
 	}
 
 	// create the snapshot store. This allows the Raft to truncate the log.
-	n.snaps, err = raft.NewFileSnapshotStore(dir, retainSnapshotCount, os.Stderr)
+	n.snapshot, err = raft.NewFileSnapshotStore(dir, retainSnapshotCount, n.log)
 	if err != nil {
 		n.Close()
 		return nil, err
@@ -85,15 +116,14 @@ func Open(dir, addr, join string) (*Node, error) {
 	n.raftAddr = taddr.String()
 
 	// start the raft server
-
-	n.trans, err = raft.NewTCPTransport(n.raftAddr, taddr, 3, 10*time.Second, os.Stderr)
+	n.trans, err = raft.NewTCPTransport(n.raftAddr, taddr, 3, 10*time.Second, n.log)
 	if err != nil {
 		n.Close()
 		return nil, err
 	}
 
 	// Instantiate the Raft systems.
-	n.raft, err = raft.NewRaft(config, (*fsm)(n), n.ls, n.ss, n.snaps, n.ps, n.trans)
+	n.raft, err = raft.NewRaft(config, (*fsm)(n), n.logs, n.stable, n.snapshot, n.peers, n.trans)
 	if err != nil {
 		n.Close()
 		return nil, err
@@ -146,5 +176,5 @@ func (n *Node) Close() error {
 }
 
 func (n *Node) signalCritical(err error) {
-	println("critical " + err.Error())
+	n.log.Logf('!', "Critial error: %v", err)
 }

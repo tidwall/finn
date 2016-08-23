@@ -11,15 +11,13 @@ import (
 
 const logPrefix = "r:log:"
 
-type logStore buntdb.DB
-
-func (ls *logStore) DB() *buntdb.DB {
-	return (*buntdb.DB)(ls)
+type logStore struct {
+	db *buntdb.DB
 }
 
 func (ls *logStore) FirstIndex() (uint64, error) {
 	var num string
-	err := ls.DB().View(func(tx *buntdb.Tx) error {
+	err := ls.db.View(func(tx *buntdb.Tx) error {
 		return tx.AscendGreaterOrEqual("", logPrefix,
 			func(key, val string) bool {
 				num = key[len(logPrefix):]
@@ -35,7 +33,7 @@ func (ls *logStore) FirstIndex() (uint64, error) {
 
 func (ls *logStore) LastIndex() (uint64, error) {
 	var num string
-	err := ls.DB().View(func(tx *buntdb.Tx) error {
+	err := ls.db.View(func(tx *buntdb.Tx) error {
 		return tx.DescendGreaterThan("", logPrefix,
 			func(key, val string) bool {
 				num = key[len(logPrefix):]
@@ -52,7 +50,7 @@ func (ls *logStore) LastIndex() (uint64, error) {
 func (ls *logStore) GetLog(index uint64, log *raft.Log) error {
 	var val string
 	var verr error
-	err := ls.DB().View(func(tx *buntdb.Tx) error {
+	err := ls.db.View(func(tx *buntdb.Tx) error {
 		val, verr = tx.Get(logPrefix + uint64ToString(index))
 		return verr
 	})
@@ -70,7 +68,7 @@ func (ls *logStore) StoreLog(log *raft.Log) error {
 }
 
 func (ls *logStore) StoreLogs(logs []*raft.Log) error {
-	err := ls.DB().Update(func(tx *buntdb.Tx) error {
+	err := ls.db.Update(func(tx *buntdb.Tx) error {
 		for _, log := range logs {
 			idx := uint64ToString(log.Index)
 			key := make([]byte, 0, len(logPrefix)+len(idx))
@@ -90,7 +88,7 @@ func (ls *logStore) StoreLogs(logs []*raft.Log) error {
 }
 
 func (ls *logStore) DeleteRange(min, max uint64) error {
-	return ls.DB().Update(func(tx *buntdb.Tx) error {
+	return ls.db.Update(func(tx *buntdb.Tx) error {
 		for i := min; i <= max; i++ {
 			if _, err := tx.Delete(logPrefix + uint64ToString(i)); err != nil {
 				if err != buntdb.ErrNotFound {

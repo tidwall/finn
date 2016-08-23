@@ -6,18 +6,19 @@ import (
 	"github.com/tidwall/buntdb"
 )
 
-type peerStore buntdb.DB
-
-func (ps *peerStore) DB() *buntdb.DB {
-	return (*buntdb.DB)(ps)
+type peerStore struct {
+	db *buntdb.DB
 }
 
 func (ps *peerStore) Peers() ([]string, error) {
 	var peers []string
-	err := ps.DB().View(func(tx *buntdb.Tx) error {
+	err := ps.db.View(func(tx *buntdb.Tx) error {
 		val, err := tx.Get("r:peers")
 		if err != nil && err != buntdb.ErrNotFound {
 			return err
+		}
+		if len(val) == 0 {
+			return nil
 		}
 		return json.Unmarshal([]byte(val), &peers)
 	})
@@ -32,7 +33,7 @@ func (ps *peerStore) SetPeers(peers []string) error {
 	if err != nil {
 		return err
 	}
-	return ps.DB().Update(func(tx *buntdb.Tx) error {
+	return ps.db.Update(func(tx *buntdb.Tx) error {
 		_, _, err := tx.Set("r:peers", string(data), nil)
 		return err
 	})
