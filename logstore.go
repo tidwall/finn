@@ -4,12 +4,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"strconv"
+	"strings"
 
+	"github.com/hashicorp/raft"
 	"github.com/tidwall/buntdb"
-	"github.com/tidwall/raft"
 )
 
-const logPrefix = "r:log:"
+const logPrefix = "log:"
 
 type logStore struct {
 	db *buntdb.DB
@@ -18,10 +19,13 @@ type logStore struct {
 func (ls *logStore) FirstIndex() (uint64, error) {
 	var num string
 	err := ls.db.View(func(tx *buntdb.Tx) error {
-		return tx.AscendGreaterOrEqual("", logPrefix,
+		return tx.Ascend("",
 			func(key, val string) bool {
-				num = key[len(logPrefix):]
-				return false
+				if strings.HasPrefix(key, logPrefix) {
+					num = key[len(logPrefix):]
+					return false
+				}
+				return true
 			},
 		)
 	})
@@ -34,10 +38,13 @@ func (ls *logStore) FirstIndex() (uint64, error) {
 func (ls *logStore) LastIndex() (uint64, error) {
 	var num string
 	err := ls.db.View(func(tx *buntdb.Tx) error {
-		return tx.DescendGreaterThan("", logPrefix,
+		return tx.Descend("",
 			func(key, val string) bool {
-				num = key[len(logPrefix):]
-				return false
+				if strings.HasPrefix(key, logPrefix) {
+					num = key[len(logPrefix):]
+					return false
+				}
+				return true
 			},
 		)
 	})

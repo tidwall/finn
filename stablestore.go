@@ -6,13 +6,15 @@ import (
 	"github.com/tidwall/buntdb"
 )
 
+const stablePrefix = "stable:"
+
 type stableStore struct {
 	db *buntdb.DB
 }
 
 func (ss *stableStore) Set(key []byte, val []byte) error {
 	return ss.db.Update(func(tx *buntdb.Tx) error {
-		_, _, err := tx.Set("r:stable:"+string(key), string(val), nil)
+		_, _, err := tx.Set(stablePrefix+string(key), string(val), nil)
 		return err
 	})
 }
@@ -20,7 +22,7 @@ func (ss *stableStore) Set(key []byte, val []byte) error {
 func (ss *stableStore) Get(key []byte) ([]byte, error) {
 	var val []byte
 	err := ss.db.View(func(tx *buntdb.Tx) error {
-		sval, err := tx.Get("r:stable:" + string(key))
+		sval, err := tx.Get(stablePrefix + string(key))
 		if err != nil {
 			return err
 		}

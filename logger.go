@@ -83,16 +83,18 @@ func (l *Logger) Write(p []byte) (int, error) {
 		}
 	}
 	msg := parts[len(parts)-1]
+	msg = strings.Replace(msg, "[Leader]", "\x1b[32m[Leader]\x1b[0m", 1)
+	msg = strings.Replace(msg, "[Follower]", "\x1b[33m[Follower]\x1b[0m", 1)
+	msg = strings.Replace(msg, "[Candidate]", "\x1b[36m[Candidate]\x1b[0m", 1)
 	tm := time.Now().Format("02 Jan 15:04:05.000")
 	l.write(fmt.Sprintf("[%d:%c] %s %c %s\n", l.pid, app, tm, tag, msg))
 	return len(p), nil
 }
 
-func (l *Logger) Logf(tag byte, format string, args ...interface{}) {
+func (l *Logger) Logf(app, tag byte, format string, args ...interface{}) {
 	if !l.doesAccept(tag) {
 		return
 	}
-	app := 'R'
 	tm := time.Now().Format("02 Jan 15:04:05.000")
 	msg := fmt.Sprintf(format, args...)
 	l.write(fmt.Sprintf("[%d:%c] %s %c %s\n", l.pid, app, tm, tag, msg))

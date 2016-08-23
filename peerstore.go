@@ -13,7 +13,7 @@ type peerStore struct {
 func (ps *peerStore) Peers() ([]string, error) {
 	var peers []string
 	err := ps.db.View(func(tx *buntdb.Tx) error {
-		val, err := tx.Get("r:peers")
+		val, err := tx.Get("peers")
 		if err != nil && err != buntdb.ErrNotFound {
 			return err
 		}
@@ -34,7 +34,7 @@ func (ps *peerStore) SetPeers(peers []string) error {
 		return err
 	}
 	return ps.db.Update(func(tx *buntdb.Tx) error {
-		_, _, err := tx.Set("r:peers", string(data), nil)
+		_, _, err := tx.Set("peers", string(data), nil)
 		return err
 	})
 }
