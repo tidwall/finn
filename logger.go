@@ -12,40 +12,57 @@ import (
 )
 
 type Logger struct {
-	mu     sync.RWMutex
-	wr     io.Writer
-	accept string
-	tty    bool
-	pid    int
+	mu    sync.RWMutex
+	wr    io.Writer
+	level LogLevel
+	tty   bool
+	pid   int
 }
 
-// http://build47.com/redis-log-format-levels/
-const loggerAcceptAll = "*#$!-"
+type LogLevel int
 
-func NewLogger(wr io.Writer) *Logger {
-	return &Logger{
-		wr:     wr,
-		accept: loggerAcceptAll,
-		pid:    os.Getpid(),
-		tty:    istty(wr),
+const (
+	Debug   LogLevel = 0 // '.'
+	Verbose LogLevel = 1 // '-'
+	Notice  LogLevel = 2 // '*'
+	Warning LogLevel = 3 // '#'
+)
+
+// http://build47.com/redis-log-format-levels/
+func logLevelForChar(c byte) LogLevel {
+	switch c {
+	default:
+		return -1
+	case '.':
+		return Debug
+	case '-':
+		return Verbose
+	case '*':
+		return Notice
+	case '#':
+		return Warning
 	}
 }
 
-func (l *Logger) SetAccept(accept string) {
+func NewLogger(wr io.Writer) *Logger {
+	return &Logger{
+		wr:    wr,
+		level: Verbose,
+		pid:   os.Getpid(),
+		tty:   istty(wr),
+	}
+}
+
+func (l *Logger) SetLevel(level LogLevel) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.accept = accept
+	l.level = level
 }
 
 func (l *Logger) doesAccept(tag byte) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	for j := 0; j < len(l.accept); j++ {
-		if l.accept[j] == tag {
-			return true
-		}
-	}
-	return false
+	return logLevelForChar(tag) >= l.level
 }
 
 func (l *Logger) Write(p []byte) (int, error) {
@@ -56,14 +73,18 @@ func (l *Logger) Write(p []byte) (int, error) {
 	for i, part := range parts {
 		if len(part) > 1 && part[0] == '[' && part[len(part)-1] == ']' {
 			switch part[1] {
-			default:
-				tag = '*'
-			case 'W': // warning
+			default: // -> verbose
+				tag = '-'
+			case 'W': // warning -> warning
 				tag = '#'
-			case 'E': // error
-				tag = '!'
-			case 'D': // debug
-				tag = '$'
+			case 'E': // error -> warning
+				tag = '#'
+			case 'D': // debug -> debug
+				tag = '.'
+			case 'V': // verbose -> verbose
+				tag = '-'
+			case 'I': // info -> notice
+				tag = '-'
 			}
 			if !l.doesAccept(tag) {
 				return len(p), nil
@@ -74,7 +95,7 @@ func (l *Logger) Write(p []byte) (int, error) {
 				if part[len(part)-1] == ':' {
 					switch part[:len(part)-1] {
 					default:
-						app = 'R'
+						app = 'R' // default to Raft app
 					}
 				}
 				break
@@ -91,7 +112,7 @@ func (l *Logger) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (l *Logger) Logf(app, tag byte, format string, args ...interface{}) {
+func (l *Logger) logf(app, tag byte, format string, args ...interface{}) {
 	if !l.doesAccept(tag) {
 		return
 	}
@@ -99,7 +120,18 @@ func (l *Logger) Logf(app, tag byte, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	l.write(fmt.Sprintf("[%d:%c] %s %c %s\n", l.pid, app, tm, tag, msg))
 }
-
+func (l *Logger) Debugf(app byte, format string, args ...interface{}) {
+	l.logf(app, '.', format, args...)
+}
+func (l *Logger) Verbosef(app byte, format string, args ...interface{}) {
+	l.logf(app, '-', format, args...)
+}
+func (l *Logger) Noticef(app byte, format string, args ...interface{}) {
+	l.logf(app, '*', format, args...)
+}
+func (l *Logger) Warningf(app byte, format string, args ...interface{}) {
+	l.logf(app, '#', format, args...)
+}
 func (l *Logger) write(msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -107,12 +139,12 @@ func (l *Logger) write(msg string) {
 		parts := strings.SplitN(msg, " ", 6)
 		var color string
 		switch parts[4] {
-		case "!":
-			color = "\x1b[31m"
+		case ".":
+			color = "\x1b[35m"
+		case "-":
+			color = ""
 		case "*":
 			color = "\x1b[1m"
-		case "$":
-			color = "\x1b[35m"
 		case "#":
 			color = "\x1b[33m"
 		}

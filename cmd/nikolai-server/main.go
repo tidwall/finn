@@ -13,7 +13,8 @@ import (
 
 func main() {
 	var addr, dir, join, durability, consistency string
-	var quiet, verbose, veryVerbose bool
+	var loglevel string
+	var quiet bool
 
 	// command-line parameters
 	flag.StringVar(&addr, "addr", ":7480", "server bind address")
@@ -21,8 +22,7 @@ func main() {
 	flag.StringVar(&join, "join", "", "join address, if any")
 	flag.StringVar(&durability, "durability", "medium", "write durability level: low,medium,high")
 	flag.StringVar(&consistency, "consistency", "medium", "read consistency level: low,medium,high")
-	flag.BoolVar(&verbose, "v", false, "Enable verbose logging")
-	flag.BoolVar(&veryVerbose, "vv", false, "Enable very verbose logging")
+	flag.StringVar(&loglevel, "loglevel", "notice", "server verbosity level: debug,verbose,notice,warning")
 	flag.BoolVar(&quiet, "q", false, "Quiet logging. Totally silent")
 	flag.Parse()
 
@@ -35,12 +35,18 @@ func main() {
 
 	var logger *nikolai.Logger
 	logger = nikolai.NewLogger(output)
-	if veryVerbose {
-		logger.SetAccept("$!*#")
-	} else if verbose {
-		logger.SetAccept("!*#")
-	} else {
-		logger.SetAccept("!*")
+	switch loglevel {
+	default:
+		fmt.Fprintf(os.Stderr, "invalid loglevel specified\n")
+		os.Exit(1)
+	case "debug":
+		logger.SetLevel(nikolai.Debug)
+	case "verbose":
+		logger.SetLevel(nikolai.Verbose)
+	case "notice":
+		logger.SetLevel(nikolai.Notice)
+	case "warning":
+		logger.SetLevel(nikolai.Warning)
 	}
 	opts := &nikolai.Options{
 		Logger:      logger,
