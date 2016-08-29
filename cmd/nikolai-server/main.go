@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"os"
 	"strings"
 
@@ -11,6 +13,7 @@ import (
 
 func main() {
 	var addr, dir, join, durability, consistency string
+	var quiet, verbose, veryVerbose bool
 
 	// command-line parameters
 	flag.StringVar(&addr, "addr", ":7480", "server bind address")
@@ -18,10 +21,27 @@ func main() {
 	flag.StringVar(&join, "join", "", "join address, if any")
 	flag.StringVar(&durability, "durability", "medium", "write durability level: low,medium,high")
 	flag.StringVar(&consistency, "consistency", "medium", "read consistency level: low,medium,high")
+	flag.BoolVar(&verbose, "v", false, "Enable verbose logging")
+	flag.BoolVar(&veryVerbose, "vv", false, "Enable very verbose logging")
+	flag.BoolVar(&quiet, "q", false, "Quiet logging. Totally silent")
 	flag.Parse()
 
-	logger := nikolai.NewLogger(os.Stderr)
+	var output io.Writer
+	if quiet {
+		output = ioutil.Discard
+	} else {
+		output = os.Stderr
+	}
 
+	var logger *nikolai.Logger
+	logger = nikolai.NewLogger(output)
+	if veryVerbose {
+		logger.SetAccept("$!*#")
+	} else if verbose {
+		logger.SetAccept("!*#")
+	} else {
+		logger.SetAccept("!*")
+	}
 	opts := &nikolai.Options{
 		Logger:      logger,
 		Durability:  levelArg(durability, "durability"),

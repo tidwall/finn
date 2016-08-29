@@ -182,8 +182,7 @@ func Open(dir, addr, join string, opts *Options) (node *Node, err error) {
 	n.raftAddr = taddr.String()
 
 	// start the raft server
-	n.trans, err = raft.NewTCPTransport(n.raftAddr, taddr, 3,
-		raftTimeout, n.log)
+	n.trans, err = raft.NewTCPTransport(n.raftAddr, taddr, 3, raftTimeout, n.log)
 	if err != nil {
 		n.Close()
 		return nil, err
