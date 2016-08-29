@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/tidwall/buntdb"
 	"github.com/tidwall/redcon"
+	"github.com/tidwall/redlog"
 )
 
 type Level int
@@ -46,7 +47,7 @@ const (
 // Options are used to provide a Node with optional funtionality.
 type Options struct {
 	// Logger is a custom Logger
-	Logger *Logger
+	Logger *redlog.Logger
 	// Consistency is the raft consistency level for reads.
 	// Default is Medium
 	Consistency Level
@@ -62,7 +63,7 @@ func fillOptions(opts *Options) *Options {
 	// copy and reassign the options
 	nopts := *opts
 	if nopts.Logger == nil {
-		nopts.Logger = NewLogger(os.Stderr)
+		nopts.Logger = redlog.New(os.Stderr)
 	}
 	return &nopts
 }
@@ -81,7 +82,7 @@ type Node struct {
 	snapshot     raft.SnapshotStore
 	trans        raft.Transport
 	raft         *raft.Raft
-	log          *Logger
+	log          *redlog.Logger
 	closed       bool
 	opts         *Options
 	clevel       Level
@@ -90,13 +91,12 @@ type Node struct {
 // Open opens a Raft node and returns the Node to the caller.
 func Open(dir, addr, join string, opts *Options) (node *Node, err error) {
 	opts = fillOptions(opts)
-
-	opts.Logger.Debugf('N', "Consistency: %s, Durability: %s", opts.Consistency, opts.Durability)
+	log := opts.Logger.Sub('N')
 
 	// if this function fails then write the error to the logger
 	defer func() {
 		if err != nil {
-			opts.Logger.Warningf('N', "%v", err)
+			log.Warningf("%v", err)
 		}
 	}()
 
@@ -144,6 +144,8 @@ func Open(dir, addr, join string, opts *Options) (node *Node, err error) {
 		clevel: opts.Consistency,
 	}
 
+	n.log.Debugf("Consistency: %s, Durability: %s", opts.Consistency, opts.Durability)
+
 	// get the peer list
 	peers, err := n.peers.Peers()
 	if err != nil {
@@ -158,7 +160,7 @@ func Open(dir, addr, join string, opts *Options) (node *Node, err error) {
 	// Allow the node to entry single-mode, potentially electing itself, if
 	// explicitly enabled and there is only 1 node in the cluster already.
 	if join == "" && len(peers) <= 1 {
-		n.log.Noticef('N', "Enable single node")
+		n.log.Noticef("Enable single node")
 		config.EnableSingleNode = true
 		config.DisableBootstrapAfterElect = false
 	}
@@ -258,7 +260,7 @@ func (n *Node) Close() error {
 }
 
 func (n *Node) signalCritical(err error) {
-	n.log.Warningf('N', "Critial error: %v", err)
+	n.log.Warningf("Critial error: %v", err)
 }
 func writeWrongArgs(conn redcon.Conn, cmd string) {
 	conn.WriteError("ERR wrong number of arguments for '" + cmd + "' command")
@@ -283,13 +285,13 @@ func (n *Node) handleRedcon(conn redcon.Conn, args []string) {
 		default:
 			writeWrongArgs(conn, args[0])
 		case 2:
-			n.log.Noticef('N', "Received join request from %v", args[1])
+			n.log.Noticef("Received join request from %v", args[1])
 			f := n.raft.AddPeer(args[1])
 			if f.Error() != nil {
 				conn.WriteError(f.Error().Error())
 				return
 			}
-			n.log.Noticef('N', "Node %v joined successfully", args[1])
+			n.log.Noticef("Node %v joined successfully", args[1])
 			conn.WriteString("OK")
 		}
 	case "raft.leader":

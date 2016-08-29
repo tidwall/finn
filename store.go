@@ -2,6 +2,7 @@ package nikolai
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -10,6 +11,83 @@ import (
 	"github.com/tidwall/buntdb"
 )
 
+// stable store
+const stablePrefix = "stable:"
+
+type stableStore struct {
+	db *buntdb.DB
+}
+
+func (ss *stableStore) Set(key []byte, val []byte) error {
+	return ss.db.Update(func(tx *buntdb.Tx) error {
+		_, _, err := tx.Set(stablePrefix+string(key), string(val), nil)
+		return err
+	})
+}
+
+func (ss *stableStore) Get(key []byte) ([]byte, error) {
+	var val []byte
+	err := ss.db.View(func(tx *buntdb.Tx) error {
+		sval, err := tx.Get(stablePrefix + string(key))
+		if err != nil {
+			return err
+		}
+		val = []byte(sval)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return val, nil
+}
+
+func (ss *stableStore) SetUint64(key []byte, val uint64) error {
+	return ss.Set(key, []byte(strconv.FormatUint(val, 10)))
+}
+
+func (ss *stableStore) GetUint64(key []byte) (uint64, error) {
+	val, err := ss.Get(key)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(string(val), 10, 64)
+}
+
+// peer store
+type peerStore struct {
+	db *buntdb.DB
+}
+
+func (ps *peerStore) Peers() ([]string, error) {
+	var peers []string
+	err := ps.db.View(func(tx *buntdb.Tx) error {
+		val, err := tx.Get("peers")
+		if err != nil && err != buntdb.ErrNotFound {
+			return err
+		}
+		if len(val) == 0 {
+			return nil
+		}
+		return json.Unmarshal([]byte(val), &peers)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return peers, nil
+}
+
+func (ps *peerStore) SetPeers(peers []string) error {
+	data, err := json.Marshal(peers)
+	if err != nil {
+		return err
+	}
+	return ps.db.Update(func(tx *buntdb.Tx) error {
+		_, _, err := tx.Set("peers", string(data), nil)
+		return err
+	})
+}
+
+// logstore
 const logPrefix = "log:"
 
 type logStore struct {

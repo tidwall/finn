@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tidwall/nikolai"
+	"github.com/tidwall/redlog"
 )
 
 func main() {
@@ -33,21 +34,21 @@ func main() {
 		output = os.Stderr
 	}
 
-	var logger *nikolai.Logger
-	logger = nikolai.NewLogger(output)
+	logger := redlog.New(output).Sub('M')
 	switch loglevel {
 	default:
 		fmt.Fprintf(os.Stderr, "invalid loglevel specified\n")
 		os.Exit(1)
 	case "debug":
-		logger.SetLevel(nikolai.Debug)
+		logger.SetLevel(0)
 	case "verbose":
-		logger.SetLevel(nikolai.Verbose)
+		logger.SetLevel(1)
 	case "notice":
-		logger.SetLevel(nikolai.Notice)
+		logger.SetLevel(2)
 	case "warning":
-		logger.SetLevel(nikolai.Warning)
+		logger.SetLevel(3)
 	}
+	logger.SetFilter(redlog.HashicorpRaftFilter)
 	opts := &nikolai.Options{
 		Logger:      logger,
 		Durability:  levelArg(durability, "durability"),
