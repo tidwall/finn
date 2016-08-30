@@ -10,141 +10,178 @@ import (
 )
 
 const (
-	opGet = 1
-	opSet = 2
-	opDel = 3
+	opGet  = 1
+	opSet  = 2
+	opDel  = 3
+	opMSet = 4
+	opMGet = 5
 )
 
 var errInvalidCommand = errors.New("invalid command")
 var errInvalidConsistencyLevel = errors.New("invalid consistency level")
 
 type command struct {
-	op         byte
-	key, value string
+	op    byte
+	multi bool
+	args  []string
 }
 
 func encodeCommand(c command) []byte {
 	nb := make([]byte, 8)
 	var buf bytes.Buffer
 	buf.WriteByte(c.op)
-	binary.LittleEndian.PutUint64(nb, uint64(len(c.key)))
-	buf.Write(nb)
-	buf.WriteString(c.key)
-	if c.op == opSet {
-		binary.LittleEndian.PutUint64(nb, uint64(len(c.value)))
+	for _, arg := range c.args {
+		binary.LittleEndian.PutUint64(nb, uint64(len(arg)))
 		buf.Write(nb)
-		buf.WriteString(c.value)
+		buf.WriteString(arg)
 	}
 	return buf.Bytes()
 }
 
 func decodeCommand(b []byte) (command, error) {
-	var n uint64
+	var n int
 	var c command
-	if len(b) < 9 {
+	if len(b) < 1 {
 		return c, errInvalidCommand
 	}
 	// read op
 	c.op = b[0]
-	// read key
-	n = binary.LittleEndian.Uint64(b[1:])
-	if len(b) < 9+int(n) {
-		return c, errInvalidCommand
-	}
-	c.key = string(b[9 : 9+int(n)])
-	switch b[0] {
-	default:
-		return c, errInvalidCommand
-	case opGet, opDel:
-		// nothing to do
-	case opSet:
-		// read value
-		if len(b) < 9+len(c.key)+8 {
+	b = b[1:]
+	for len(b) > 0 {
+		if len(b) < 8 {
 			return c, errInvalidCommand
 		}
-		n = binary.LittleEndian.Uint64(b[9+len(c.key):])
-		c.value = string(b[9+len(c.key)+8 : 9+len(c.key)+8+int(n)])
+		n = int(binary.LittleEndian.Uint64(b))
+		b = b[8:]
+		if len(b) < n {
+			return c, errInvalidCommand
+		}
+		c.args = append(c.args, string(b[:n]))
+		b = b[n:]
 	}
 	return c, nil
 }
 
-func (n *Node) doDelete(key string) error {
-	c := command{op: opDel, key: key}
+func (n *Node) doDel(keys []string, multi bool) (int, error) {
+	c := command{op: opDel, args: keys, multi: multi}
 	f := n.raft.Apply(encodeCommand(c), raftTimeout)
 	if err := f.Error(); err != nil {
-		return err
+		return 0, err
 	}
-	if err, ok := f.Response().(error); ok {
-		return err
+	v := f.Response()
+	switch v := v.(type) {
+	case int:
+		return v, nil
+	case error:
+		return 0, v
 	}
-	return nil
+	return 0, errors.New("invalid response")
 }
 
-func (n *Node) doSet(key, value string) error {
-	c := command{op: opSet, key: key, value: value}
+func (n *Node) doSet(pairs []string, multi bool) (int, error) {
+	if len(pairs)%2 == 1 {
+		return 0, errInvalidCommand
+	}
+	c := command{op: opSet, args: pairs, multi: multi}
 	f := n.raft.Apply(encodeCommand(c), raftTimeout)
 	if err := f.Error(); err != nil {
-		return err
+		return 0, err
 	}
-	if err, ok := f.Response().(error); ok {
-		return err
+	v := f.Response()
+	switch v := v.(type) {
+	case int:
+		return v, nil
+	case error:
+		return 0, v
 	}
-	return nil
+	return 0, errors.New("invalid response")
 }
 
-func (n *Node) doGet(key string, level Level) (string, error) {
+func (n *Node) doGet(keys []string, multi bool, level Level) ([]*string, error) {
 	if level == Low {
-		return n.applyGet(key)
+		return n.applyGet(keys, multi)
 	} else if level == Medium {
 		if n.raft.State() != raft.Leader {
-			return "", raft.ErrNotLeader
+			return nil, raft.ErrNotLeader
 		}
-		return n.applyGet(key)
+		return n.applyGet(keys, multi)
 	} else if level == High {
-		c := command{op: opGet, key: key}
+		c := command{op: opGet, args: keys, multi: multi}
 		n.raft.AppliedIndex()
 		f := n.raft.Apply(encodeCommand(c), raftTimeout)
 		if err := f.Error(); err != nil {
-			return "", err
+			return nil, err
 		}
 		v := f.Response()
 		switch v := v.(type) {
-		case string:
+		case []*string:
 			return v, nil
 		case error:
-			return "", v
+			return nil, v
 		}
-		return "", errors.New("invalid response")
+		return nil, errors.New("invalid response")
 	}
-	return "", errInvalidConsistencyLevel
+	return nil, errInvalidConsistencyLevel
 }
 
-func (n *Node) applyGet(key string) (string, error) {
-	var value string
+func (n *Node) applyGet(keys []string, multi bool) ([]*string, error) {
+	var vals []*string
 	err := n.ddb.View(func(tx *buntdb.Tx) error {
-		v, err := tx.Get(key)
-		if err != nil {
-			return err
+		for _, key := range keys {
+			v, err := tx.Get(key)
+			if err == buntdb.ErrNotFound {
+				vals = append(vals, nil)
+			} else if err != nil {
+				return err
+			} else {
+				vals = append(vals, &v)
+			}
 		}
-		value = v
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return value, nil
+	return vals, nil
 }
 
-func (n *Node) applySet(key, value string) error {
-	return n.ddb.Update(func(tx *buntdb.Tx) error {
-		_, _, err := tx.Set(key, value, nil)
-		return err
+func (n *Node) applySet(pairs []string, multi bool) (int, error) {
+	if len(pairs)%2 == 1 {
+		return 0, errInvalidCommand
+	}
+	var count int
+	err := n.ddb.Update(func(tx *buntdb.Tx) error {
+		for i := 0; i < len(pairs); i += 2 {
+			_, _, err := tx.Set(pairs[i+0], pairs[i+1], nil)
+			if err != nil {
+				return err
+			}
+			count++
+		}
+		return nil
 	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
-func (n *Node) applyDelete(key string) error {
-	return n.ddb.Update(func(tx *buntdb.Tx) error {
-		_, err := tx.Delete(key)
-		return err
+func (n *Node) applyDel(keys []string, multi bool) (int, error) {
+	var count int
+	err := n.ddb.Update(func(tx *buntdb.Tx) error {
+		for _, key := range keys {
+			_, err := tx.Delete(key)
+			if err != buntdb.ErrNotFound {
+				if err != nil {
+					return err
+				}
+				count++
+			}
+		}
+		return nil
 	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }

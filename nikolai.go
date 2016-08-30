@@ -271,12 +271,16 @@ func (n *Node) leader() string {
 	if err != nil {
 		return ""
 	}
+	if addr.Port == 0 {
+		return ""
+	}
 	addr.Port -= 10000
 	return addr.String()
 }
 
 func (n *Node) handleRedcon(conn redcon.Conn, args []string) {
-	switch strings.ToLower(args[0]) {
+	cmd := strings.ToLower(args[0])
+	switch cmd {
 	default:
 		// serialize this command and pass it back to the caller
 		conn.WriteError("ERR unknown command '" + args[0] + "'")
@@ -313,62 +317,66 @@ func (n *Node) handleRedcon(conn redcon.Conn, args []string) {
 		case 2:
 			conn.WriteString(args[1])
 		}
-	case "get":
-		switch len(args) {
-		default:
+	case "get", "mget":
+		if len(args) < 2 || (len(args) > 2 && cmd == "get") {
 			writeWrongArgs(conn, args[0])
-		case 2:
-			level := n.clevel
-			// TODO: read the level param
-			val, err := n.doGet(args[1], level)
-			if err != nil {
-				if err == buntdb.ErrNotFound {
-					conn.WriteNull()
-				} else if err == raft.ErrNotLeader {
-					conn.WriteError(n.notLeaderMessage())
-				} else {
-					conn.WriteError(err.Error())
-				}
-				return
-			}
-			conn.WriteBulk(val)
+			return
 		}
-	case "set":
-		switch len(args) {
-		default:
+		level := n.clevel
+		// TODO: read the level param
+		vals, err := n.doGet(args[1:], cmd == "mget", level)
+		if err != nil {
+			if err == raft.ErrNotLeader {
+				conn.WriteError(n.notLeaderMessage())
+			} else {
+				conn.WriteError(err.Error())
+			}
+			return
+		}
+		if cmd == "mget" {
+			conn.WriteArray(len(vals))
+		}
+		for _, val := range vals {
+			if val == nil {
+				conn.WriteNull()
+			} else {
+				conn.WriteBulk(*val)
+			}
+		}
+	case "set", "mset":
+		if len(args) < 3 || (len(args)-1)%2 == 1 || (len(args) > 3 && cmd == "set") {
 			writeWrongArgs(conn, args[0])
-		case 3:
-			if err := n.doSet(args[1], args[2]); err != nil {
-				if err == raft.ErrNotLeader {
-					conn.WriteError(n.notLeaderMessage())
-				} else {
-					conn.WriteError(err.Error())
-				}
-				return
-			}
-			conn.WriteString("OK")
+			return
 		}
-	case "del":
-		switch len(args) {
-		default:
+		_, err := n.doSet(args[1:], cmd == "mset")
+		if err != nil {
+			if err == raft.ErrNotLeader {
+				conn.WriteError(n.notLeaderMessage())
+			} else {
+				conn.WriteError(err.Error())
+			}
+			return
+		}
+		conn.WriteString("OK")
+	case "del", "mdel":
+		if len(args) < 2 || (len(args) > 2 && cmd == "del") {
 			writeWrongArgs(conn, args[0])
-		case 2:
-			if err := n.doDelete(args[1]); err != nil {
-				if err == buntdb.ErrNotFound {
-					conn.WriteInt(0)
-				} else if err == raft.ErrNotLeader {
-					conn.WriteError(n.notLeaderMessage())
-				} else {
-					conn.WriteError(err.Error())
-				}
-				return
-			}
-			conn.WriteInt(1)
+			return
 		}
+		count, err := n.doDel(args[1:], cmd == "mdel")
+		if err != nil {
+			if err == raft.ErrNotLeader {
+				conn.WriteError(n.notLeaderMessage())
+			} else {
+				conn.WriteError(err.Error())
+			}
+			return
+		}
+		conn.WriteInt(count)
 	}
 }
 func (n *Node) notLeaderMessage() string {
-	return fmt.Sprintf("%v: try %v", raft.ErrNotLeader, n.leader())
+	return fmt.Sprintf("%v, try %v", raft.ErrNotLeader, n.leader())
 }
 func buildCommand(args ...string) string {
 	var b = make([]byte, 0, 32)

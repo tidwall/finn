@@ -21,20 +21,21 @@ func (f *fsm) Apply(l *raft.Log) interface{} {
 	if err != nil {
 		return err
 	}
+	var val interface{}
 	switch c.op {
 	default:
 		return errInvalidCommand
 	case opGet:
-		val, err := f.Node().applyGet(c.key)
-		if err != nil {
-			return err
-		}
-		return val
+		val, err = f.Node().applyGet(c.args, c.multi)
 	case opSet:
-		return f.Node().applySet(c.key, c.value)
+		val, err = f.Node().applySet(c.args, c.multi)
 	case opDel:
-		return f.Node().applyDelete(c.key)
+		val, err = f.Node().applyDel(c.args, c.multi)
 	}
+	if err != nil {
+		return err
+	}
+	return val
 }
 
 // Restore stores the key-value store to a previous state.
