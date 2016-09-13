@@ -1,8 +1,6 @@
 package plume
 
 import (
-	"bufio"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -10,26 +8,32 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/raft"
 	"github.com/tidwall/raft-boltdb"
-	"github.com/tidwall/raft-buntdb"
+	"github.com/tidwall/raft-fastlog"
+	"github.com/tidwall/raft-redcon"
 	"github.com/tidwall/redcon"
 	"github.com/tidwall/redlog"
 )
 
 var (
-	ErrUnknownCommand          = errors.New("unknown command")
-	ErrInvalidNumberOfArgs     = errors.New("invalid number or arguments")
-	ErrInvalidCommand          = errors.New("invalid command")
-	ErrInvalidConsistencyLevel = errors.New("invalid consistency level")
-	ErrSyntaxError             = errors.New("syntax error")
-	ErrInvalidResponse         = errors.New("invalid response")
-	ErrDisabled                = errors.New("disabled")
+	// ErrUnknownCommand is returned when the command is not known.
+	ErrUnknownCommand = errors.New("unknown command")
+	// ErrWrongNumberOfArguments is returned when the number of arguments is wrong.
+	ErrWrongNumberOfArguments = errors.New("wrong number or arguments")
+)
+
+var (
+	errInvalidCommand          = errors.New("invalid command")
+	errInvalidConsistencyLevel = errors.New("invalid consistency level")
+	errSyntaxError             = errors.New("syntax error")
+	errInvalidResponse         = errors.New("invalid response")
+	errDisabled                = errors.New("disabled")
 )
 
 const (
@@ -73,10 +77,13 @@ const (
 type Backend int
 
 const (
-	// Bunt is for using BuntDB for the raft log.
-	Bunt Backend = 0
-	// Bolt is for using BoltDB for the raft log.
+	// FastLog is a persistent in-memory raft log.
+	// This is the default.
+	FastLog Backend = 0
+	// Bolt is a persistent disk raft log.
 	Bolt Backend = 1
+	// InMem is a non-persistent in-memory raft log.
+	InMem Backend = 2
 )
 
 // String returns a string representation of the Backend
@@ -84,10 +91,12 @@ func (b Backend) String() string {
 	switch b {
 	default:
 		return "unknown"
-	case Bunt:
-		return "bunt"
+	case FastLog:
+		return "fastlog"
 	case Bolt:
 		return "bolt"
+	case InMem:
+		return "inmem"
 	}
 }
 
@@ -114,7 +123,7 @@ type Options struct {
 	// Default is Medium
 	Durability Level
 	// Backend is the database backend.
-	// Default is Bunt
+	// Default is MemLog
 	Backend Backend
 	// LogLevel is the log verbosity
 	// Default is Notice
@@ -154,7 +163,7 @@ type Logger interface {
 // Applier is used to apply raft commands.
 type Applier interface {
 	// Apply applies a command
-	Apply(conn redcon.Conn, args []string,
+	Apply(conn redcon.Conn, cmd redcon.Command,
 		mutate func() (interface{}, error),
 		respond func(interface{}) (interface{}, error),
 	) (interface{}, error)
@@ -164,7 +173,7 @@ type Applier interface {
 // Machine handles raft commands and raft snapshotting.
 type Machine interface {
 	// Command is called by the Node for incoming commands.
-	Command(a Applier, conn redcon.Conn, args []string) (interface{}, error)
+	Command(a Applier, conn redcon.Conn, cmd redcon.Command) (interface{}, error)
 	// Restore is used to restore data from a snapshot.
 	Restore(rd io.Reader) error
 	// Snapshot is used to support log compaction. This call should write a
@@ -174,22 +183,18 @@ type Machine interface {
 
 // Node represents a Raft server node.
 type Node struct {
-	mu           sync.RWMutex
-	clientAddr   string
-	raftAddr     string
-	clientServer *redcon.Server
-	snapshot     raft.SnapshotStore
-	trans        raft.Transport
-	raft         *raft.Raft
-	log          *redlog.Logger // the node logger
-	mlog         *redlog.Logger // the machine logger
-	closed       bool
-	opts         *Options
-	level        Level
-	handler      Machine
-	buntstore    *raftbuntdb.BuntStore
-	boltstore    *raftboltdb.BoltStore
-	store        bigStore
+	mu       sync.RWMutex
+	addr     string
+	snapshot raft.SnapshotStore
+	trans    *raftredcon.RedconTransport
+	raft     *raft.Raft
+	log      *redlog.Logger // the node logger
+	mlog     *redlog.Logger // the machine logger
+	closed   bool
+	opts     *Options
+	level    Level
+	handler  Machine
+	store    bigStore
 }
 
 // bigStore represents a raft store that conforms to
@@ -215,7 +220,7 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	opts = fillOptions(opts)
 	log := redlog.New(opts.LogOutput).Sub('N')
 	log.SetFilter(redlog.HashicorpRaftFilter)
-
+	log.SetIgnoreDups(true)
 	switch opts.LogLevel {
 	case Debug:
 		log.SetLevel(0)
@@ -239,6 +244,15 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 		return nil, err
 	}
 
+	// create a node and assign it some fields
+	n := &Node{
+		log:     log,
+		mlog:    log.Sub('C'),
+		opts:    opts,
+		level:   opts.Consistency,
+		handler: handler,
+	}
+
 	var store bigStore
 	if opts.Backend == Bolt {
 		opts.Durability = High
@@ -246,32 +260,30 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 		if err != nil {
 			return nil, err
 		}
+	} else if opts.Backend == InMem {
+		opts.Durability = Low
+		store, err = raftfastlog.NewFastLogStore(":memory:", raftfastlog.Low, n.log.Sub('S'))
+		if err != nil {
+			return nil, err
+		}
 	} else {
-		opts.Backend = Bunt
-		var dur raftbuntdb.Level
+		opts.Backend = FastLog
+		var dur raftfastlog.Level
 		switch opts.Durability {
 		default:
-			dur = raftbuntdb.Medium
+			dur = raftfastlog.Medium
 			opts.Durability = Medium
 		case High:
-			dur = raftbuntdb.High
+			dur = raftfastlog.High
 		case Low:
-			dur = raftbuntdb.Low
+			dur = raftfastlog.Low
 		}
-		store, err = raftbuntdb.NewBuntStore(filepath.Join(dir, "raft.db"), dur)
+		store, err = raftfastlog.NewFastLogStore(filepath.Join(dir, "raft.db"), dur, n.log.Sub('S'))
 		if err != nil {
 			return nil, err
 		}
 	}
-	// create a node and assign it some fields
-	n := &Node{
-		store:   store,
-		log:     log,
-		mlog:    log.Sub('C'),
-		opts:    opts,
-		level:   opts.Consistency,
-		handler: handler,
-	}
+	n.store = store
 
 	n.log.Debugf("Consistency: %s, Durability: %s, Backend: %s", opts.Consistency, opts.Durability, opts.Backend)
 
@@ -286,7 +298,7 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	config := raft.DefaultConfig()
 	config.LogOutput = n.log
 
-	// Allow the node to entry single-mode, potentially electing itself, if
+	// Allow the node to enter single-mode, potentially electing itself, if
 	// explicitly enabled and there is only 1 node in the cluster already.
 	if join == "" && len(peers) <= 1 {
 		n.log.Noticef("Enable single node")
@@ -307,31 +319,28 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 		n.Close()
 		return nil, err
 	}
-	n.clientAddr = taddr.String()
 
-	// derive the raftAddr from the clientAddr by adding 10000 to the port.
-	taddr.Port += 10000
-	n.raftAddr = taddr.String()
+	// Set the atomic flag which indicates that we can accept Redcon commands.
+	var doReady uint64
 
 	// start the raft server
-	if false {
-		n.trans, err = raft.NewTCPTransport(n.raftAddr, taddr, 3, raftTimeout, n.log)
-		if err != nil {
-			n.Close()
-			return nil, err
-		}
-	} else {
-		n.trans, err = NewRedconTransport(
-			n.raftAddr, taddr, 3, raftTimeout, n.log,
-			func(conn redcon.Conn, args []string) {
-				n.doCommand(conn, args)
-			},
-		)
-		if err != nil {
-			n.Close()
-			return nil, err
-		}
+	n.addr = taddr.String()
+	n.trans, err = raftredcon.NewRedconTransport(
+		n.addr,
+		func(conn redcon.Conn, cmd redcon.Command) {
+			if atomic.LoadUint64(&doReady) != 0 {
+				n.doCommand(conn, cmd)
+			} else {
+				conn.WriteError("ERR raft not ready")
+			}
+		}, nil, nil,
+		n.log.Sub('L'),
+	)
+	if err != nil {
+		n.Close()
+		return nil, err
 	}
+
 	// Instantiate the Raft systems.
 	n.raft, err = raft.NewRaft(config, (*nodeFSM)(n),
 		n.store, n.store, n.snapshot, n.store, n.trans)
@@ -339,40 +348,34 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 		n.Close()
 		return nil, err
 	}
-	var csrv *redcon.Server
-	csrv = redcon.NewServer(n.clientAddr,
-		func(conn redcon.Conn, cmds [][]string) {
-			for _, args := range cmds {
-				n.doCommand(conn, args)
-			}
-		}, nil, nil)
 
-	// start the redcon server
-	signal := make(chan error)
-	go func() {
-		var err error
-		defer func() {
-			csrv.Close()
-			if err != nil {
-				n.log.Warningf("Critial error: %v", err)
-			}
-		}()
-		err = csrv.ListenServeAndSignal(signal)
-	}()
-	err = <-signal
-	if err != nil {
-		n.Close()
-		return nil, err
-	}
-	n.clientServer = csrv
+	// set the atomic flag which indicates that we can accept Redcon commands.
+	atomic.AddUint64(&doReady, 1)
 
-	// If join was specified, make the join request.
-	if join != "" && len(peers) == 0 {
-		if err := reqRaftJoin(join, n.raftAddr); err != nil {
-			return nil, fmt.Errorf("failed to join node at %v: %v", join, err)
+	// if --join was specified, make the join request.
+	for {
+		if join != "" && len(peers) == 0 {
+			if err := reqRaftJoin(join, n.addr); err != nil {
+				switch err.Error() {
+				default:
+					if strings.HasPrefix(err.Error(), "TRY ") {
+						// we received a "TRY addr" response. let forward the join to
+						// the specified address"
+						join = strings.Split(err.Error(), " ")[1]
+						continue
+					}
+					return nil, fmt.Errorf("failed to join node at %v: %v", join, err)
+
+				// below are a few errors that we should consider OK.
+				case "ERR raft not ready",
+					"ERR leader not known",
+					"ERR leadership lost while committing log":
+					n.log.Warningf("join node at %v: %v", join, err)
+				}
+			}
 		}
+		break
 	}
-
 	return n, nil
 }
 
@@ -380,14 +383,12 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 func (n *Node) Close() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	// shutdown the clientServer first.
-	// we do not want to accept any more connections.
-	if n.clientServer != nil {
-		n.clientServer.Close()
-	}
 	// shutdown the raft, but do not handle the future error. :PPA:
 	if n.raft != nil {
-		n.raft.Shutdown()
+		n.raft.Shutdown().Error()
+	}
+	if n.trans != nil {
+		n.trans.Close()
 	}
 	// close the raft database
 	if n.store != nil {
@@ -399,143 +400,64 @@ func (n *Node) Close() error {
 
 // leader returns the client address for the leader
 func (n *Node) leader() string {
-	leader := n.raft.Leader()
-	if leader == "" {
-		return ""
-	}
-	addr, err := net.ResolveTCPAddr("tcp", leader)
-	if err != nil {
-		return ""
-	}
-	if addr.Port == 0 {
-		return ""
-	}
-	addr.Port -= 10000
-	return addr.String()
-}
-
-// buildCommand builds a valid redis command.
-func buildCommand(args ...string) string {
-	var b = make([]byte, 0, 32)
-	b = append(b, '*')
-	b = append(b, []byte(strconv.FormatInt(int64(len(args)), 10))...)
-	b = append(b, '\r', '\n')
-	for _, arg := range args {
-		b = append(b, '$')
-		b = append(b, []byte(strconv.FormatInt(int64(len(arg)), 10))...)
-		b = append(b, '\r', '\n')
-		b = append(b, []byte(arg)...)
-		b = append(b, '\r', '\n')
-	}
-	return string(b)
-}
-
-// req makes a very simple remote request with the specified commands.
-// The command should be a valid redis array. The response is a plain
-// string or an error. ONLY USE FOR LOW FREQUENCY REQUESTS.
-func req(addr string, cmd string) (string, error) {
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-	_, err = io.WriteString(conn, cmd)
-	if err != nil {
-		return "", err
-	}
-	rd := bufio.NewReader(conn)
-	c, err := rd.ReadByte()
-	if err != nil {
-		return "", err
-	}
-	switch c {
-	default:
-		return "", errors.New("invalid response")
-	case '+', '-', '$':
-		line, err := rd.ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-		if len(line) < 2 || line[len(line)-2] != '\r' {
-			return "", errors.New("invalid response")
-		}
-		line = line[:len(line)-2]
-		switch c {
-		default:
-			return "", errors.New("invalid response")
-		case '+':
-			return line, nil
-		case '-':
-			return "", errors.New(line)
-		case '$':
-			n, err := strconv.ParseUint(line, 10, 64)
-			if err != nil {
-				return "", err
-			}
-			data := make([]byte, int(n)+2)
-			if _, err := io.ReadFull(rd, data); err != nil {
-				return "", err
-			}
-			if data[len(data)-2] != '\r' || data[len(data)-1] != '\n' {
-				return "", errors.New("invalid response")
-			}
-			return string(data[:len(data)-2]), nil
-		}
-	}
+	return n.raft.Leader()
 }
 
 // reqRaftJoin does a remote "RAFTJOIN" command at the specified address.
 func reqRaftJoin(join, raftAddr string) error {
-	resp, err := req(join, buildCommand("raftjoin", raftAddr))
+	resp, _, err := raftredcon.Do(join, nil, []byte("raftaddpeer"), []byte(raftAddr))
 	if err != nil {
 		return err
 	}
-	if resp != "OK" {
+	if string(resp) != "OK" {
 		return errors.New("invalid response")
 	}
 	return nil
 }
 
-// doCommand executes a client command, which will process through
-// the raft log pipeline.
-func (n *Node) doCommand(conn redcon.Conn, args []string) (interface{}, error) {
-	if len(args) == 0 {
+// doCommand executes a client command which is processed through the raft pipeline.
+func (n *Node) doCommand(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) == 0 {
 		return nil, nil
 	}
 	var val interface{}
 	var err error
-	switch strings.ToLower(args[0]) {
+	switch strings.ToLower(string(cmd.Args[0])) {
 	default:
-		val, err = n.handler.Command((*nodeApplier)(n), conn, args)
-		if err == ErrDisabled {
+		val, err = n.handler.Command((*nodeApplier)(n), conn, cmd)
+		if err == errDisabled {
 			err = ErrUnknownCommand
 		}
-	case "raftjoin":
-		val, err = n.doRaftJoin(conn, args)
+	case "raftaddpeer":
+		val, err = n.doRaftAddPeer(conn, cmd)
+	case "raftremovepeer":
+		val, err = n.doRaftRemovePeer(conn, cmd)
 	case "raftleader":
-		val, err = n.doRaftLeader(conn, args)
+		val, err = n.doRaftLeader(conn, cmd)
 	case "raftsnapshot":
-		val, err = n.doRaftSnapshot(conn, args)
+		val, err = n.doRaftSnapshot(conn, cmd)
+	case "raftshrinklog":
+		val, err = n.doRaftShrinkLog(conn, cmd)
 	case "raftstate":
-		val, err = n.doRaftState(conn, args)
+		val, err = n.doRaftState(conn, cmd)
 	case "raftstats":
-		val, err = n.doRaftStats(conn, args)
+		val, err = n.doRaftStats(conn, cmd)
 	case "quit":
-		val, err = n.doQuit(conn, args)
+		val, err = n.doQuit(conn, cmd)
 	case "ping":
-		val, err = n.doPing(conn, args)
+		val, err = n.doPing(conn, cmd)
 	}
 	if err != nil && conn != nil {
 		if err == ErrUnknownCommand {
-			conn.WriteError("ERR unknown command '" + args[0] + "'")
-		} else if err == ErrInvalidNumberOfArgs {
-			conn.WriteError("ERR wrong number of arguments for '" + args[0] + "' command")
+			conn.WriteError("ERR unknown command '" + string(cmd.Args[0]) + "'")
+		} else if err == ErrWrongNumberOfArguments {
+			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
 		} else if err == raft.ErrNotLeader {
-			leader := n.leader()
+			leader := n.raft.Leader()
 			if leader == "" {
 				conn.WriteError("ERR leader not known")
 			} else {
-				conn.WriteError("TRY " + n.leader())
+				conn.WriteError("TRY " + leader)
 			}
 		} else {
 			conn.WriteError("ERR " + strings.TrimSpace(strings.Split(err.Error(), "\n")[0]))
@@ -545,31 +467,31 @@ func (n *Node) doCommand(conn redcon.Conn, args []string) (interface{}, error) {
 }
 
 // doPing handles a "PING" client command.
-func (n *Node) doPing(conn redcon.Conn, args []string) (interface{}, error) {
-	switch len(args) {
+func (n *Node) doPing(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	switch len(cmd.Args) {
 	default:
-		return nil, ErrInvalidNumberOfArgs
+		return nil, ErrWrongNumberOfArguments
 	case 1:
 		conn.WriteString("PONG")
 	case 2:
-		conn.WriteBulk(args[1])
+		conn.WriteBulk(cmd.Args[1])
 	}
 	return nil, nil
 }
 
 // doRaftLeader handles a "RAFTLEADER" client command.
-func (n *Node) doRaftLeader(conn redcon.Conn, args []string) (interface{}, error) {
-	if len(args) != 1 {
-		return nil, ErrInvalidNumberOfArgs
+func (n *Node) doRaftLeader(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) != 1 {
+		return nil, ErrWrongNumberOfArguments
 	}
-	conn.WriteString(n.leader())
+	conn.WriteBulkString(n.raft.Leader())
 	return nil, nil
 }
 
 // doRaftSnapshot handles a "RAFTSNAPSHOT" client command.
-func (n *Node) doRaftSnapshot(conn redcon.Conn, args []string) (interface{}, error) {
-	if len(args) != 1 {
-		return nil, ErrInvalidNumberOfArgs
+func (n *Node) doRaftSnapshot(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) != 1 {
+		return nil, ErrWrongNumberOfArguments
 	}
 	f := n.raft.Snapshot()
 	err := f.Error()
@@ -581,19 +503,41 @@ func (n *Node) doRaftSnapshot(conn redcon.Conn, args []string) (interface{}, err
 	return nil, nil
 }
 
-// doRaftState handles a "RAFTSTATE" client command.
-func (n *Node) doRaftState(conn redcon.Conn, args []string) (interface{}, error) {
-	if len(args) != 1 {
-		return nil, ErrInvalidNumberOfArgs
+type shrinkable interface {
+	Shrink() error
+}
+
+// doRaftShrinkLog handles a "RAFTSHRINKLOG" client command.
+func (n *Node) doRaftShrinkLog(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) != 1 {
+		return nil, ErrWrongNumberOfArguments
 	}
-	conn.WriteBulk(n.raft.State().String())
+	if s, ok := n.store.(shrinkable); ok {
+		err := s.Shrink()
+		if err != nil {
+			conn.WriteError("ERR " + err.Error())
+			return nil, nil
+		}
+		conn.WriteString("OK")
+		return nil, nil
+	}
+	conn.WriteError("ERR log is not shrinkable")
+	return nil, nil
+}
+
+// doRaftState handles a "RAFTSTATE" client command.
+func (n *Node) doRaftState(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) != 1 {
+		return nil, ErrWrongNumberOfArguments
+	}
+	conn.WriteBulkString(n.raft.State().String())
 	return nil, nil
 }
 
 // doRaftStatus handles a "RAFTSTATUS" client command.
-func (n *Node) doRaftStats(conn redcon.Conn, args []string) (interface{}, error) {
-	if len(args) != 1 {
-		return nil, ErrInvalidNumberOfArgs
+func (n *Node) doRaftStats(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) != 1 {
+		return nil, ErrWrongNumberOfArguments
 	}
 	n.mu.RLock()
 	defer n.mu.RUnlock()
@@ -605,72 +549,53 @@ func (n *Node) doRaftStats(conn redcon.Conn, args []string) (interface{}, error)
 	sort.Strings(keys)
 	conn.WriteArray(len(keys) * 2)
 	for _, key := range keys {
-		conn.WriteBulk(key)
-		conn.WriteBulk(stats[key])
+		conn.WriteBulkString(key)
+		conn.WriteBulkString(stats[key])
 	}
 	return nil, nil
 }
 
 // doQuit handles a "QUIT" client command.
-func (n *Node) doQuit(conn redcon.Conn, args []string) (interface{}, error) {
+func (n *Node) doQuit(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
 	conn.WriteString("OK")
 	conn.Close()
 	return nil, nil
 }
 
-// doRaftJoin handles a "RAFTJOIN address" client command.
-func (n *Node) doRaftJoin(conn redcon.Conn, args []string) (interface{}, error) {
-	if len(args) != 2 {
-		return nil, ErrInvalidNumberOfArgs
+// doRaftAddPeer handles a "RAFTADDPEER address" client command.
+func (n *Node) doRaftAddPeer(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) != 2 {
+		return nil, ErrWrongNumberOfArguments
 	}
-	n.log.Noticef("Received join request from %v", args[0])
-	f := n.raft.AddPeer(args[1])
+	n.log.Noticef("Received add peer request from %v", string(cmd.Args[1]))
+	f := n.raft.AddPeer(string(cmd.Args[1]))
 	if f.Error() != nil {
 		return nil, f.Error()
 	}
-	n.log.Noticef("Node %v joined successfully", args[0])
+	n.log.Noticef("Node %v added successfully", string(cmd.Args[1]))
 	conn.WriteString("OK")
 	return nil, nil
 }
 
-// encodeArgs converts a []string into []byte
-func encodeArgs(args []string) []byte {
-	var count int
-	for _, arg := range args {
-		count += len(arg) + 8
+// doRaftRemovePeer handles a "RAFTREMOVEPEER address" client command.
+func (n *Node) doRaftRemovePeer(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+	if len(cmd.Args) != 2 {
+		return nil, ErrWrongNumberOfArguments
 	}
-	res := make([]byte, 0, count)
-	num := make([]byte, 8)
-	for _, arg := range args {
-		binary.LittleEndian.PutUint64(num, uint64(len(arg)))
-		res = append(res, num...)
-		res = append(res, []byte(arg)...)
+	n.log.Noticef("Received remove peer request from %v", string(cmd.Args[1]))
+	f := n.raft.RemovePeer(string(cmd.Args[1]))
+	if f.Error() != nil {
+		return nil, f.Error()
 	}
-	return res
-}
-
-/// decodeArgs converts a []byte into []string
-func decodeArgs(data []byte) ([]string, error) {
-	var args []string
-	for len(data) > 0 {
-		if len(data) < 8 {
-			return nil, ErrInvalidCommand
-		}
-		num := int(binary.LittleEndian.Uint64(data))
-		data = data[8:]
-		if len(data) < num {
-			return nil, ErrInvalidCommand
-		}
-		args = append(args, string(data[:num]))
-		data = data[num:]
-	}
-	return args, nil
+	n.log.Noticef("Node %v detached successfully", string(cmd.Args[1]))
+	conn.WriteString("OK")
+	return nil, nil
 }
 
 // raftApplyCommand encodes a series of args into a raft command and
 // applies it to the index.
-func (n *Node) raftApplyCommand(args []string) (interface{}, error) {
-	f := n.raft.Apply(encodeArgs(args), raftTimeout)
+func (n *Node) raftApplyCommand(cmd redcon.Command) (interface{}, error) {
+	f := n.raft.Apply(cmd.Raw, raftTimeout)
 	if err := f.Error(); err != nil {
 		return nil, err
 	}
@@ -696,7 +621,7 @@ func (n *Node) raftLevelGuard() error {
 	switch n.level {
 	default:
 		// a valid level is required
-		return ErrInvalidConsistencyLevel
+		return errInvalidConsistencyLevel
 	case Low:
 		// anything goes.
 		return nil
@@ -723,7 +648,7 @@ func (n *Node) raftLevelGuard() error {
 		case error:
 			return v
 		}
-		return ErrInvalidResponse
+		return errInvalidResponse
 	}
 }
 
@@ -736,7 +661,7 @@ type nodeApplier Node
 // The return value from mutate will be passed into the respond param.
 func (m *nodeApplier) Apply(
 	conn redcon.Conn,
-	args []string,
+	cmd redcon.Command,
 	mutate func() (interface{}, error),
 	respond func(interface{}) (interface{}, error),
 ) (interface{}, error) {
@@ -753,7 +678,7 @@ func (m *nodeApplier) Apply(
 	} else {
 		// this is happening on the leader node.
 		// apply the command to the raft log.
-		val, err = (*Node)(m).raftApplyCommand(args)
+		val, err = (*Node)(m).raftApplyCommand(cmd)
 	}
 	if err != nil {
 		return nil, err
@@ -772,11 +697,11 @@ type nodeFSM Node
 
 // Apply applies a Raft log entry to the key-value store.
 func (m *nodeFSM) Apply(l *raft.Log) interface{} {
-	args, err := decodeArgs(l.Data)
+	cmd, err := redcon.Parse(l.Data)
 	if err != nil {
 		return err
 	}
-	val, err := (*Node)(m).doCommand(nil, args)
+	val, err := (*Node)(m).doCommand(nil, cmd)
 	if err != nil {
 		return err
 	}
@@ -785,14 +710,12 @@ func (m *nodeFSM) Apply(l *raft.Log) interface{} {
 
 // Restore stores the key-value store to a previous state.
 func (m *nodeFSM) Restore(rc io.ReadCloser) error {
-	println("C")
 	defer rc.Close()
 	return (*Node)(m).handler.Restore(rc)
 }
 
 // Persist writes the snapshot to the given sink.
 func (m *nodeFSM) Persist(sink raft.SnapshotSink) error {
-	println("B")
 	if err := (*Node)(m).handler.Snapshot(sink); err != nil {
 		sink.Cancel()
 		return err
@@ -806,6 +729,5 @@ func (m *nodeFSM) Release() {}
 
 // Snapshot returns a snapshot of the key-value store.
 func (m *nodeFSM) Snapshot() (raft.FSMSnapshot, error) {
-	println("A")
 	return m, nil
 }
