@@ -1,6 +1,7 @@
 package plume
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -215,6 +216,17 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	log := redlog.New(opts.LogOutput).Sub('N')
 	log.SetFilter(redlog.HashicorpRaftFilter)
 
+	switch opts.LogLevel {
+	case Debug:
+		log.SetLevel(0)
+	case Verbose:
+		log.SetLevel(1)
+	case Notice:
+		log.SetLevel(2)
+	case Warning:
+		log.SetLevel(3)
+	}
+
 	// if this function fails then write the error to the logger
 	defer func() {
 		if err != nil {
@@ -301,15 +313,20 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	taddr.Port += 10000
 	n.raftAddr = taddr.String()
 
-	n.trans, err = NewRedconTransport(n.raftAddr, taddr, 3, raftTimeout, n.log)
-	if err != nil {
-		n.Close()
-		return nil, err
-	}
-
 	// start the raft server
-	if true {
+	if false {
 		n.trans, err = raft.NewTCPTransport(n.raftAddr, taddr, 3, raftTimeout, n.log)
+		if err != nil {
+			n.Close()
+			return nil, err
+		}
+	} else {
+		n.trans, err = NewRedconTransport(
+			n.raftAddr, taddr, 3, raftTimeout, n.log,
+			func(conn redcon.Conn, args []string) {
+				n.doCommand(conn, args)
+			},
+		)
 		if err != nil {
 			n.Close()
 			return nil, err
@@ -382,7 +399,11 @@ func (n *Node) Close() error {
 
 // leader returns the client address for the leader
 func (n *Node) leader() string {
-	addr, err := net.ResolveTCPAddr("tcp", n.raft.Leader())
+	leader := n.raft.Leader()
+	if leader == "" {
+		return ""
+	}
+	addr, err := net.ResolveTCPAddr("tcp", leader)
 	if err != nil {
 		return ""
 	}
@@ -411,7 +432,7 @@ func buildCommand(args ...string) string {
 
 // req makes a very simple remote request with the specified commands.
 // The command should be a valid redis array. The response is a plain
-// string or an error.
+// string or an error. ONLY USE FOR LOW FREQUENCY REQUESTS.
 func req(addr string, cmd string) (string, error) {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -422,19 +443,45 @@ func req(addr string, cmd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	bytes := make([]byte, 32)
-	n, err := conn.Read(bytes)
+	rd := bufio.NewReader(conn)
+	c, err := rd.ReadByte()
 	if err != nil {
 		return "", err
 	}
-	resp := string(bytes[:n])
-	if strings.HasPrefix(resp, "-") {
-		return "", errors.New(strings.TrimSpace(resp[1:]))
+	switch c {
+	default:
+		return "", errors.New("invalid response")
+	case '+', '-', '$':
+		line, err := rd.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		if len(line) < 2 || line[len(line)-2] != '\r' {
+			return "", errors.New("invalid response")
+		}
+		line = line[:len(line)-2]
+		switch c {
+		default:
+			return "", errors.New("invalid response")
+		case '+':
+			return line, nil
+		case '-':
+			return "", errors.New(line)
+		case '$':
+			n, err := strconv.ParseUint(line, 10, 64)
+			if err != nil {
+				return "", err
+			}
+			data := make([]byte, int(n)+2)
+			if _, err := io.ReadFull(rd, data); err != nil {
+				return "", err
+			}
+			if data[len(data)-2] != '\r' || data[len(data)-1] != '\n' {
+				return "", errors.New("invalid response")
+			}
+			return string(data[:len(data)-2]), nil
+		}
 	}
-	if strings.HasPrefix(resp, "+") {
-		return strings.TrimSpace(resp[1:]), nil
-	}
-	return "", errors.New("invalid response")
 }
 
 // reqRaftJoin does a remote "RAFTJOIN" command at the specified address.
@@ -478,17 +525,20 @@ func (n *Node) doCommand(conn redcon.Conn, args []string) (interface{}, error) {
 	case "ping":
 		val, err = n.doPing(conn, args)
 	}
-	if conn != nil {
-		if err != nil {
-			if err == ErrUnknownCommand {
-				conn.WriteError("ERR unknown command '" + args[0] + "'")
-			} else if err == ErrInvalidNumberOfArgs {
-				conn.WriteError("ERR wrong number of arguments for '" + args[0] + "' command")
-			} else if err == raft.ErrNotLeader {
-				conn.WriteError(fmt.Sprintf("%v, try %v", raft.ErrNotLeader, n.leader()))
+	if err != nil && conn != nil {
+		if err == ErrUnknownCommand {
+			conn.WriteError("ERR unknown command '" + args[0] + "'")
+		} else if err == ErrInvalidNumberOfArgs {
+			conn.WriteError("ERR wrong number of arguments for '" + args[0] + "' command")
+		} else if err == raft.ErrNotLeader {
+			leader := n.leader()
+			if leader == "" {
+				conn.WriteError("ERR leader not known")
 			} else {
-				conn.WriteError("ERR " + strings.TrimSpace(strings.Split(err.Error(), "\n")[0]))
+				conn.WriteError("TRY " + n.leader())
 			}
+		} else {
+			conn.WriteError("ERR " + strings.TrimSpace(strings.Split(err.Error(), "\n")[0]))
 		}
 	}
 	return val, err
@@ -735,12 +785,14 @@ func (m *nodeFSM) Apply(l *raft.Log) interface{} {
 
 // Restore stores the key-value store to a previous state.
 func (m *nodeFSM) Restore(rc io.ReadCloser) error {
+	println("C")
 	defer rc.Close()
 	return (*Node)(m).handler.Restore(rc)
 }
 
 // Persist writes the snapshot to the given sink.
 func (m *nodeFSM) Persist(sink raft.SnapshotSink) error {
+	println("B")
 	if err := (*Node)(m).handler.Snapshot(sink); err != nil {
 		sink.Cancel()
 		return err
@@ -754,5 +806,6 @@ func (m *nodeFSM) Release() {}
 
 // Snapshot returns a snapshot of the key-value store.
 func (m *nodeFSM) Snapshot() (raft.FSMSnapshot, error) {
+	println("A")
 	return m, nil
 }

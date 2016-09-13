@@ -141,6 +141,7 @@ func TestServer(t *testing.T) {
 	//os.RemoveAll("data")
 	opts := Options{
 		Consistency: Low,
+		LogLevel:    Debug,
 	}
 	node := os.Getenv("NODE")
 	join := ""
@@ -148,9 +149,10 @@ func TestServer(t *testing.T) {
 		node = "0"
 	}
 	if node != "0" {
-		join = ":7840"
+		join = ":7480"
 	}
-	n, err := Open("data"+node, ":784"+node, join, NewKeyValueMachine(), &opts)
+
+	n, err := Open("data"+node, ":748"+node, join, NewKeyValueMachine(), &opts)
 	if err != nil {
 		t.Fatal(err)
 	}
