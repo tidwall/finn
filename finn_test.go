@@ -1,4 +1,4 @@
-package plume
+package finn
 
 import (
 	"bufio"

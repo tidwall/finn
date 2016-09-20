@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tidwall/finn"
 	"github.com/tidwall/match"
-	"github.com/tidwall/plume"
 	"github.com/tidwall/redcon"
 )
 
@@ -34,37 +34,37 @@ func main() {
 	flag.StringVar(&join, "join", "", "Join a cluster by providing an address")
 	flag.Parse()
 
-	var opts plume.Options
+	var opts finn.Options
 
 	switch strings.ToLower(backend) {
 	default:
 		log.Fatalf("invalid backend '%v'", backend)
 	case "fastlog":
-		opts.Backend = plume.FastLog
+		opts.Backend = finn.FastLog
 	case "bolt":
-		opts.Backend = plume.Bolt
+		opts.Backend = finn.Bolt
 	case "inmem":
-		opts.Backend = plume.InMem
+		opts.Backend = finn.InMem
 	}
 	switch strings.ToLower(durability) {
 	default:
 		log.Fatalf("invalid durability '%v'", durability)
 	case "low":
-		opts.Durability = plume.Low
+		opts.Durability = finn.Low
 	case "medium":
-		opts.Durability = plume.Medium
+		opts.Durability = finn.Medium
 	case "high":
-		opts.Durability = plume.High
+		opts.Durability = finn.High
 	}
 	switch strings.ToLower(consistency) {
 	default:
 		log.Fatalf("invalid durability '%v'", consistency)
 	case "low":
-		opts.Consistency = plume.Low
+		opts.Consistency = finn.Low
 	case "medium":
-		opts.Consistency = plume.Medium
+		opts.Consistency = finn.Medium
 	case "high":
-		opts.Consistency = plume.High
+		opts.Consistency = finn.High
 	}
 	switch strings.ToLower(loglevel) {
 	default:
@@ -72,15 +72,15 @@ func main() {
 	case "quiet":
 		opts.LogOutput = ioutil.Discard
 	case "warning":
-		opts.LogLevel = plume.Warning
+		opts.LogLevel = finn.Warning
 	case "notice":
-		opts.LogLevel = plume.Notice
+		opts.LogLevel = finn.Notice
 	case "verbose":
-		opts.LogLevel = plume.Verbose
+		opts.LogLevel = finn.Verbose
 	case "debug":
-		opts.LogLevel = plume.Debug
+		opts.LogLevel = finn.Debug
 	}
-	n, err := plume.Open(dir, fmt.Sprintf(":%d", port), join, NewClone(), &opts)
+	n, err := finn.Open(dir, fmt.Sprintf(":%d", port), join, NewClone(), &opts)
 	if err != nil {
 		if opts.LogOutput == ioutil.Discard {
 			log.Fatal(err)
@@ -100,13 +100,13 @@ func NewClone() *Clone {
 		keys: make(map[string][]byte),
 	}
 }
-func (kvm *Clone) Command(m plume.Applier, conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
+func (kvm *Clone) Command(m finn.Applier, conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
 	switch strings.ToLower(string(cmd.Args[0])) {
 	default:
-		return nil, plume.ErrUnknownCommand
+		return nil, finn.ErrUnknownCommand
 	case "set":
 		if len(cmd.Args) != 3 {
-			return nil, plume.ErrWrongNumberOfArguments
+			return nil, finn.ErrWrongNumberOfArguments
 		}
 		return m.Apply(conn, cmd,
 			func() (interface{}, error) {
@@ -122,7 +122,7 @@ func (kvm *Clone) Command(m plume.Applier, conn redcon.Conn, cmd redcon.Command)
 		)
 	case "get":
 		if len(cmd.Args) != 2 {
-			return nil, plume.ErrWrongNumberOfArguments
+			return nil, finn.ErrWrongNumberOfArguments
 		}
 		return m.Apply(conn, cmd, nil,
 			func(interface{}) (interface{}, error) {
@@ -139,7 +139,7 @@ func (kvm *Clone) Command(m plume.Applier, conn redcon.Conn, cmd redcon.Command)
 		)
 	case "del":
 		if len(cmd.Args) < 2 {
-			return nil, plume.ErrWrongNumberOfArguments
+			return nil, finn.ErrWrongNumberOfArguments
 		}
 		return m.Apply(conn, cmd,
 			func() (interface{}, error) {
@@ -163,7 +163,7 @@ func (kvm *Clone) Command(m plume.Applier, conn redcon.Conn, cmd redcon.Command)
 		)
 	case "keys":
 		if len(cmd.Args) != 2 {
-			return nil, plume.ErrWrongNumberOfArguments
+			return nil, finn.ErrWrongNumberOfArguments
 		}
 		pattern := string(cmd.Args[1])
 		return m.Apply(conn, cmd, nil,

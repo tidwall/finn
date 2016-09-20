@@ -1,4 +1,5 @@
-package plume
+// Package finn provide a fast and simple Raft implementation.
+package finn
 
 import (
 	"errors"
@@ -26,6 +27,8 @@ var (
 	ErrUnknownCommand = errors.New("unknown command")
 	// ErrWrongNumberOfArguments is returned when the number of arguments is wrong.
 	ErrWrongNumberOfArguments = errors.New("wrong number or arguments")
+	// ErrDisabled is returned when a feature is disabled.
+	ErrDisabled = errors.New("disabled")
 )
 
 var (
@@ -33,7 +36,6 @@ var (
 	errInvalidConsistencyLevel = errors.New("invalid consistency level")
 	errSyntaxError             = errors.New("syntax error")
 	errInvalidResponse         = errors.New("invalid response")
-	errDisabled                = errors.New("disabled")
 )
 
 const (
@@ -425,7 +427,7 @@ func (n *Node) doCommand(conn redcon.Conn, cmd redcon.Command) (interface{}, err
 	switch strings.ToLower(string(cmd.Args[0])) {
 	default:
 		val, err = n.handler.Command((*nodeApplier)(n), conn, cmd)
-		if err == errDisabled {
+		if err == ErrDisabled {
 			err = ErrUnknownCommand
 		}
 	case "raftaddpeer":
