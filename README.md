@@ -19,10 +19,11 @@ Features
 --------
 
 - Simple API for quickly creating a [fault-tolerant](https://en.wikipedia.org/wiki/Fault_tolerance) cluster
+- Fast network protocol using the [raft-redcon](https://github.com/tidwall/raft-redcon) transport
 - Optional [backends](#log-backends) for log persistence. [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog)
-- Adjustable [consistency and durability](#consistency-and-durability) levels.
-- A [full-featured example](#full-featured-example) to help jumpstart integration.
-- [Built-in raft commands](#built-in-raft-commands) for monitoring and managing the cluster.
+- Adjustable [consistency and durability](#consistency-and-durability) levels
+- A [full-featured example](#full-featured-example) to help jumpstart integration
+- [Built-in raft commands](#built-in-raft-commands) for monitoring and managing the cluster
 - Supports the [Redis log format](http://build47.com/redis-log-format-levels/)
 - Works with clients such as [redigo](https://github.com/garyburd/redigo), [redis-py](https://github.com/andymccurdy/redis-py), [node_redis](https://github.com/NodeRedis/node_redis), [jedis](https://github.com/xetorthio/jedis), and [redis-cli](http://redis.io/topics/rediscli)
 
