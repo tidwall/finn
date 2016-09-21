@@ -10,7 +10,7 @@
 
 ====
 
-Finn is a fast and simple framework for building [Raft](https://raft.github.io/) implementations in Go. It uses [Redcon](https://github.com/tidwall/redcon) for the network transport and [Hashicorp Raft](https://github.com/hashicorp/raft) for the state machine. There is also the option to use [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog) for log persistence.
+Finn is a fast and simple framework for building [Raft](https://raft.github.io/) implementations in Go. It uses [Redcon](https://github.com/tidwall/redcon) for the network transport and [Hashicorp Raft](https://github.com/hashicorp/raft). There is also the option to use [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog) for log persistence.
 
 The reason for this project is to add Raft support to a future release of [BuntDB](https://github.com/tidwall/buntdb) and [Tile38](https://github.com/tidwall/tile38).
 
