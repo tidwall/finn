@@ -95,7 +95,22 @@ func (kvm *KVM) Snapshot(wr io.Writer) error {
 	}
 	return nil
 }
+
+var killed int
+var killCond = sync.NewCond(&sync.Mutex{})
+
+func killNodes() {
+	killCond.L.Lock()
+	killed++
+	killCond.Broadcast()
+	killCond.L.Unlock()
+}
+
 func startTestNode(t testing.TB, num int, logger bool) {
+	killCond.L.Lock()
+	killidx := killed
+	killCond.L.Unlock()
+
 	node := fmt.Sprintf("%d", num)
 	if err := os.MkdirAll("data/"+node, 0700); err != nil {
 		t.Fatal(err)
@@ -118,8 +133,17 @@ func startTestNode(t testing.TB, num int, logger bool) {
 		t.Fatal(err)
 	}
 	defer n.Close()
-	select {}
+	for {
+		killCond.L.Lock()
+		if killed != killidx {
+			killCond.L.Unlock()
+			return
+		}
+		killCond.Wait()
+		killCond.L.Unlock()
+	}
 }
+
 func waitFor(t testing.TB, num int) {
 	start := time.Now()
 	for {
@@ -154,6 +178,51 @@ func testDo(t testing.TB, node int, expect string, args ...string) {
 	}
 }
 
+func TestVarious(t *testing.T) {
+	t.Run("Level", SubTestLevel)
+	t.Run("Backend", SubTestBackend)
+}
+
+func SubTestLevel(t *testing.T) {
+	var level Level
+	level = Level(-99)
+	if level.String() != "unknown" {
+		t.Fatalf("expecting '%v', got '%v'", "unknown", level.String())
+	}
+	level = Low
+	if level.String() != "low" {
+		t.Fatalf("expecting '%v', got '%v'", "low", level.String())
+	}
+	level = Medium
+	if level.String() != "medium" {
+		t.Fatalf("expecting '%v', got '%v'", "medium", level.String())
+	}
+	level = High
+	if level.String() != "high" {
+		t.Fatalf("expecting '%v', got '%v'", "high", level.String())
+	}
+}
+
+func SubTestBackend(t *testing.T) {
+	var backend Backend
+	backend = Backend(-99)
+	if backend.String() != "unknown" {
+		t.Fatalf("expecting '%v', got '%v'", "unknown", backend.String())
+	}
+	backend = FastLog
+	if backend.String() != "fastlog" {
+		t.Fatalf("expecting '%v', got '%v'", "fastlog", backend.String())
+	}
+	backend = Bolt
+	if backend.String() != "bolt" {
+		t.Fatalf("expecting '%v', got '%v'", "bolt", backend.String())
+	}
+	backend = InMem
+	if backend.String() != "inmem" {
+		t.Fatalf("expecting '%v', got '%v'", "inmem", backend.String())
+	}
+}
+
 func TestCluster(t *testing.T) {
 	os.RemoveAll("data")
 	defer os.RemoveAll("data")
@@ -161,10 +230,15 @@ func TestCluster(t *testing.T) {
 		go startTestNode(t, i, os.Getenv("LOG") == "1")
 		waitFor(t, i)
 	}
+	defer killNodes()
 	t.Run("Leader", SubTestLeader)
 	t.Run("Set", SubTestSet)
 	t.Run("Get", SubTestGet)
 	t.Run("Snapshot", SubTestSnapshot)
+	t.Run("Ping", SubTestPing)
+	t.Run("RaftShrinkLog", SubTestRaftShrinkLog)
+	t.Run("RaftStats", SubTestRaftStats)
+	t.Run("RaftState", SubTestRaftState)
 	t.Run("AddPeer", SubTestAddPeer)
 }
 
@@ -186,6 +260,36 @@ func SubTestGet(t *testing.T) {
 	testDo(t, 2, "TRY :7480", "set", "hello", "world")
 }
 
+func SubTestPing(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		testDo(t, i, "PONG", "ping")
+		testDo(t, i, "HELLO", "ping", "HELLO")
+		testDo(t, i, "ERR wrong number of arguments for 'ping' command", "ping", "HELLO", "WORLD")
+	}
+}
+
+func SubTestRaftShrinkLog(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		testDo(t, i, "OK", "raftshrinklog")
+		testDo(t, i, "ERR wrong number of arguments for 'raftshrinklog' command", "raftshrinklog", "abc")
+	}
+}
+func SubTestRaftStats(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		//testDo(t, i, "OK", "raftstats")
+		//testDo(t, i, "ERR wrong number of arguments for 'raftstatus' command", "raftstatus", "abc")
+	}
+}
+func SubTestRaftState(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		if i == 0 {
+			testDo(t, i, "Leader", "raftstate")
+		} else {
+			testDo(t, i, "Follower", "raftstate")
+		}
+		testDo(t, i, "ERR wrong number of arguments for 'raftstate' command", "raftstate", "abc")
+	}
+}
 func SubTestSnapshot(t *testing.T) {
 	// insert 1000 items
 	for i := 0; i < 1000; i++ {
