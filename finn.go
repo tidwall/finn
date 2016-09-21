@@ -699,6 +699,10 @@ type nodeFSM Node
 
 // Apply applies a Raft log entry to the key-value store.
 func (m *nodeFSM) Apply(l *raft.Log) interface{} {
+	if len(l.Data) == 0 {
+		// blank data
+		return nil
+	}
 	cmd, err := redcon.Parse(l.Data)
 	if err != nil {
 		return err

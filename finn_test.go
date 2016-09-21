@@ -96,46 +96,38 @@ func (kvm *KVM) Snapshot(wr io.Writer) error {
 	return nil
 }
 
-var killed int
+var killed = make(map[int]bool)
 var killCond = sync.NewCond(&sync.Mutex{})
 
-func killNodes() {
+func killNodes(basePort int) {
 	killCond.L.Lock()
-	killed++
+	killed[basePort] = true
 	killCond.Broadcast()
 	killCond.L.Unlock()
 }
 
-func startTestNode(t testing.TB, num int, logger bool) {
-	killCond.L.Lock()
-	killidx := killed
-	killCond.L.Unlock()
-
+func startTestNode(t testing.TB, basePort int, num int, opts *Options) {
 	node := fmt.Sprintf("%d", num)
+
 	if err := os.MkdirAll("data/"+node, 0700); err != nil {
 		t.Fatal(err)
-	}
-	var opts Options
-	if !logger {
-		opts.LogOutput = ioutil.Discard
-	} else {
-		opts.LogLevel = Debug
 	}
 	join := ""
 	if node == "" {
 		node = "0"
 	}
+	addr := fmt.Sprintf(":%d", basePort/10*10+num)
 	if node != "0" {
-		join = ":7480"
+		join = fmt.Sprintf(":%d", basePort)
 	}
-	n, err := Open("data/"+node, ":748"+node, join, NewKVM(), &opts)
+	n, err := Open("data/"+node, addr, join, NewKVM(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer n.Close()
 	for {
 		killCond.L.Lock()
-		if killed != killidx {
+		if killed[basePort] {
 			killCond.L.Unlock()
 			return
 		}
@@ -144,14 +136,15 @@ func startTestNode(t testing.TB, num int, logger bool) {
 	}
 }
 
-func waitFor(t testing.TB, num int) {
+func waitFor(t testing.TB, basePort, node int) {
+	target := fmt.Sprintf(":%d", basePort/10*10+node)
 	start := time.Now()
 	for {
 		if time.Now().Sub(start) > time.Second*10 {
 			t.Fatal("timeout looking for leader")
 		}
 		time.Sleep(time.Second / 4)
-		resp, _, err := raftredcon.Do(fmt.Sprintf(":748%d", num), nil, []byte("raftleader"))
+		resp, _, err := raftredcon.Do(target, nil, []byte("raftleader"))
 		if err != nil {
 			continue
 		}
@@ -161,12 +154,13 @@ func waitFor(t testing.TB, num int) {
 	}
 }
 
-func testDo(t testing.TB, node int, expect string, args ...string) {
+func testDo(t testing.TB, basePort, node int, expect string, args ...string) {
 	var bargs [][]byte
 	for _, arg := range args {
 		bargs = append(bargs, []byte(arg))
 	}
-	resp, _, err := raftredcon.Do(fmt.Sprintf(":748%d", node), nil, bargs...)
+	target := fmt.Sprintf(":%d", basePort/10*10+node)
+	resp, _, err := raftredcon.Do(target, nil, bargs...)
 	if err != nil {
 		if err.Error() == expect {
 			return
@@ -224,95 +218,126 @@ func SubTestBackend(t *testing.T) {
 }
 
 func TestCluster(t *testing.T) {
-	os.RemoveAll("data")
-	defer os.RemoveAll("data")
-	for i := 0; i < 3; i++ {
-		go startTestNode(t, i, os.Getenv("LOG") == "1")
-		waitFor(t, i)
+
+	var optsArr []Options
+	for _, backend := range []Backend{Bolt, FastLog, InMem} {
+		for _, consistency := range []Level{Low, Medium, High} {
+			optsArr = append(optsArr, Options{
+				Backend:     backend,
+				Consistency: consistency,
+			})
+		}
 	}
-	defer killNodes()
-	t.Run("Leader", SubTestLeader)
-	t.Run("Set", SubTestSet)
-	t.Run("Get", SubTestGet)
-	t.Run("Snapshot", SubTestSnapshot)
-	t.Run("Ping", SubTestPing)
-	t.Run("RaftShrinkLog", SubTestRaftShrinkLog)
-	t.Run("RaftStats", SubTestRaftStats)
-	t.Run("RaftState", SubTestRaftState)
-	t.Run("AddPeer", SubTestAddPeer)
-}
-
-func SubTestLeader(t *testing.T) {
-	testDo(t, 0, ":7480", "raftleader")
-	testDo(t, 1, ":7480", "raftleader")
-	testDo(t, 2, ":7480", "raftleader")
-}
-
-func SubTestSet(t *testing.T) {
-	testDo(t, 0, "OK", "set", "hello", "world")
-	testDo(t, 1, "TRY :7480", "set", "hello", "world")
-	testDo(t, 2, "TRY :7480", "set", "hello", "world")
-}
-
-func SubTestGet(t *testing.T) {
-	testDo(t, 0, "world", "get", "hello")
-	testDo(t, 1, "TRY :7480", "set", "hello", "world")
-	testDo(t, 2, "TRY :7480", "set", "hello", "world")
-}
-
-func SubTestPing(t *testing.T) {
-	for i := 0; i < 3; i++ {
-		testDo(t, i, "PONG", "ping")
-		testDo(t, i, "HELLO", "ping", "HELLO")
-		testDo(t, i, "ERR wrong number of arguments for 'ping' command", "ping", "HELLO", "WORLD")
+	for i := 0; i < len(optsArr); i++ {
+		func() {
+			opts := optsArr[i]
+			if os.Getenv("LOG") != "1" {
+				opts.LogOutput = ioutil.Discard
+			}
+			basePort := (7480/10 + i) * 10
+			tag := fmt.Sprintf("%v-%v-%d", opts.Backend, opts.Consistency, basePort)
+			t.Logf("%s", tag)
+			t.Run(tag, func(t *testing.T) {
+				os.RemoveAll("data")
+				defer os.RemoveAll("data")
+				defer killNodes(basePort)
+				for i := 0; i < 3; i++ {
+					go startTestNode(t, basePort, i, &opts)
+					waitFor(t, basePort, i)
+				}
+				t.Run("Leader", func(t *testing.T) { SubTestLeader(t, basePort, &opts) })
+				t.Run("Set", func(t *testing.T) { SubTestSet(t, basePort, &opts) })
+				t.Run("Get", func(t *testing.T) { SubTestGet(t, basePort, &opts) })
+				t.Run("Snapshot", func(t *testing.T) { SubTestSnapshot(t, basePort, &opts) })
+				t.Run("Ping", func(t *testing.T) { SubTestPing(t, basePort, &opts) })
+				t.Run("RaftShrinkLog", func(t *testing.T) { SubTestRaftShrinkLog(t, basePort, &opts) })
+				t.Run("RaftStats", func(t *testing.T) { SubTestRaftStats(t, basePort, &opts) })
+				t.Run("RaftState", func(t *testing.T) { SubTestRaftState(t, basePort, &opts) })
+				t.Run("AddPeer", func(t *testing.T) { SubTestAddPeer(t, basePort, &opts) })
+			})
+		}()
 	}
 }
 
-func SubTestRaftShrinkLog(t *testing.T) {
+func SubTestLeader(t *testing.T, basePort int, opts *Options) {
+	baseAddr := fmt.Sprintf(":%d", basePort)
+	testDo(t, basePort, 0, baseAddr, "raftleader")
+	testDo(t, basePort, 1, baseAddr, "raftleader")
+	testDo(t, basePort, 2, baseAddr, "raftleader")
+}
+
+func SubTestSet(t *testing.T, basePort int, opts *Options) {
+	baseAddr := fmt.Sprintf(":%d", basePort)
+	testDo(t, basePort, 0, "OK", "set", "hello", "world")
+	testDo(t, basePort, 1, "TRY "+baseAddr, "set", "hello", "world")
+	testDo(t, basePort, 2, "TRY "+baseAddr, "set", "hello", "world")
+}
+
+func SubTestGet(t *testing.T, basePort int, opts *Options) {
+	baseAddr := fmt.Sprintf(":%d", basePort)
+	testDo(t, basePort, 0, "world", "get", "hello")
+	testDo(t, basePort, 1, "TRY "+baseAddr, "set", "hello", "world")
+	testDo(t, basePort, 2, "TRY "+baseAddr, "set", "hello", "world")
+}
+
+func SubTestPing(t *testing.T, basePort int, opts *Options) {
 	for i := 0; i < 3; i++ {
-		testDo(t, i, "OK", "raftshrinklog")
-		testDo(t, i, "ERR wrong number of arguments for 'raftshrinklog' command", "raftshrinklog", "abc")
+		testDo(t, basePort, i, "PONG", "ping")
+		testDo(t, basePort, i, "HELLO", "ping", "HELLO")
+		testDo(t, basePort, i, "ERR wrong number of arguments for 'ping' command", "ping", "HELLO", "WORLD")
 	}
 }
-func SubTestRaftStats(t *testing.T) {
+
+func SubTestRaftShrinkLog(t *testing.T, basePort int, opts *Options) {
+	for i := 0; i < 3; i++ {
+		if opts.Backend == Bolt {
+			testDo(t, basePort, i, "ERR log is not shrinkable", "raftshrinklog")
+		} else {
+			testDo(t, basePort, i, "OK", "raftshrinklog")
+		}
+		testDo(t, basePort, i, "ERR wrong number of arguments for 'raftshrinklog' command", "raftshrinklog", "abc")
+	}
+}
+func SubTestRaftStats(t *testing.T, basePort int, opts *Options) {
 	for i := 0; i < 3; i++ {
 		//testDo(t, i, "OK", "raftstats")
 		//testDo(t, i, "ERR wrong number of arguments for 'raftstatus' command", "raftstatus", "abc")
 	}
 }
-func SubTestRaftState(t *testing.T) {
+func SubTestRaftState(t *testing.T, basePort int, opts *Options) {
 	for i := 0; i < 3; i++ {
 		if i == 0 {
-			testDo(t, i, "Leader", "raftstate")
+			testDo(t, basePort, i, "Leader", "raftstate")
 		} else {
-			testDo(t, i, "Follower", "raftstate")
+			testDo(t, basePort, i, "Follower", "raftstate")
 		}
-		testDo(t, i, "ERR wrong number of arguments for 'raftstate' command", "raftstate", "abc")
+		testDo(t, basePort, i, "ERR wrong number of arguments for 'raftstate' command", "raftstate", "abc")
 	}
 }
-func SubTestSnapshot(t *testing.T) {
+func SubTestSnapshot(t *testing.T, basePort int, opts *Options) {
 	// insert 1000 items
 	for i := 0; i < 1000; i++ {
-		testDo(t, 0, "OK", "set", fmt.Sprintf("key:%d", i), fmt.Sprintf("val:%d", i))
+		testDo(t, basePort, 0, "OK", "set", fmt.Sprintf("key:%d", i), fmt.Sprintf("val:%d", i))
 	}
-	testDo(t, 0, "OK", "raftsnapshot")
-	testDo(t, 1, "OK", "raftsnapshot")
-	testDo(t, 2, "OK", "raftsnapshot")
+	testDo(t, basePort, 0, "OK", "raftsnapshot")
+	testDo(t, basePort, 1, "OK", "raftsnapshot")
+	testDo(t, basePort, 2, "OK", "raftsnapshot")
 }
-func SubTestAddPeer(t *testing.T) {
-	go startTestNode(t, 3, os.Getenv("LOG") == "1")
-	waitFor(t, 3)
-	testDo(t, 3, ":7480", "raftleader")
-	testDo(t, 3, "TRY :7480", "set", "hello", "world")
-	testDo(t, 3, "OK", "raftsnapshot")
+func SubTestAddPeer(t *testing.T, basePort int, opts *Options) {
+	baseAddr := fmt.Sprintf(":%d", basePort)
+	go startTestNode(t, basePort, 3, opts)
+	waitFor(t, basePort, 3)
+	testDo(t, basePort, 3, baseAddr, "raftleader")
+	testDo(t, basePort, 3, "TRY "+baseAddr, "set", "hello", "world")
+	testDo(t, basePort, 3, "OK", "raftsnapshot")
 }
 
 func BenchmarkCluster(t *testing.B) {
 	os.RemoveAll("data")
 	defer os.RemoveAll("data")
 	for i := 0; i < 3; i++ {
-		go startTestNode(t, i, false)
-		waitFor(t, i)
+		go startTestNode(t, 7480, i, &Options{LogOutput: ioutil.Discard})
+		waitFor(t, 7480, i)
 	}
 	t.Run("PL", func(t *testing.B) {
 		pl := []int{1, 4, 16, 64}
