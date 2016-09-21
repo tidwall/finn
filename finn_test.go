@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	raftredcon "github.com/tidwall/raft-redcon"
+	"github.com/tidwall/raft-redcon"
 	"github.com/tidwall/redcon"
 )
 
@@ -154,7 +154,7 @@ func waitFor(t testing.TB, basePort, node int) {
 	}
 }
 
-func testDo(t testing.TB, basePort, node int, expect string, args ...string) {
+func testDo(t testing.TB, basePort, node int, expect string, args ...string) string {
 	var bargs [][]byte
 	for _, arg := range args {
 		bargs = append(bargs, []byte(arg))
@@ -163,13 +163,14 @@ func testDo(t testing.TB, basePort, node int, expect string, args ...string) {
 	resp, _, err := raftredcon.Do(target, nil, bargs...)
 	if err != nil {
 		if err.Error() == expect {
-			return
+			return ""
 		}
 		t.Fatalf("node %d: %v", node, err)
 	}
-	if string(resp) != expect {
+	if expect != "???" && string(resp) != expect {
 		t.Fatalf("node %d: expected '%v', got '%v'", node, expect, string(resp))
 	}
+	return string(resp)
 }
 
 func TestVarious(t *testing.T) {
@@ -254,6 +255,7 @@ func TestCluster(t *testing.T) {
 				t.Run("RaftStats", func(t *testing.T) { SubTestRaftStats(t, basePort, &opts) })
 				t.Run("RaftState", func(t *testing.T) { SubTestRaftState(t, basePort, &opts) })
 				t.Run("AddPeer", func(t *testing.T) { SubTestAddPeer(t, basePort, &opts) })
+				t.Run("RemovePeer", func(t *testing.T) { SubTestRemovePeer(t, basePort, &opts) })
 			})
 		}()
 	}
@@ -300,8 +302,11 @@ func SubTestRaftShrinkLog(t *testing.T, basePort int, opts *Options) {
 }
 func SubTestRaftStats(t *testing.T, basePort int, opts *Options) {
 	for i := 0; i < 3; i++ {
-		//testDo(t, i, "OK", "raftstats")
-		//testDo(t, i, "ERR wrong number of arguments for 'raftstatus' command", "raftstatus", "abc")
+		resp := testDo(t, basePort, i, "???", "raftstats")
+		if !strings.Contains(resp, "applied_index") || !strings.Contains(resp, "num_peers") {
+			t.Fatal("expected values")
+		}
+		testDo(t, basePort, i, "ERR wrong number of arguments for 'raftstats' command", "raftstats", "abc")
 	}
 }
 func SubTestRaftState(t *testing.T, basePort int, opts *Options) {
@@ -330,6 +335,13 @@ func SubTestAddPeer(t *testing.T, basePort int, opts *Options) {
 	testDo(t, basePort, 3, baseAddr, "raftleader")
 	testDo(t, basePort, 3, "TRY "+baseAddr, "set", "hello", "world")
 	testDo(t, basePort, 3, "OK", "raftsnapshot")
+}
+
+func SubTestRemovePeer(t *testing.T, basePort int, opts *Options) {
+	baseAddr := fmt.Sprintf(":%d", basePort)
+	testDo(t, basePort, 1, "TRY "+baseAddr, "raftremovepeer", fmt.Sprintf(":%d3", basePort/10))
+	testDo(t, basePort, 0, "OK", "raftremovepeer", fmt.Sprintf(":%d3", basePort/10))
+	testDo(t, basePort, 0, "ERR peer is unknown", "raftremovepeer", fmt.Sprintf(":%d3", basePort/10))
 }
 
 func BenchmarkCluster(t *testing.B) {
