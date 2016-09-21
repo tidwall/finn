@@ -90,16 +90,20 @@ func main() {
 	select {}
 }
 
+// Clone represent a Redis clone machine
 type Clone struct {
 	mu   sync.RWMutex
 	keys map[string][]byte
 }
 
+// NewClone create a new clone
 func NewClone() *Clone {
 	return &Clone{
 		keys: make(map[string][]byte),
 	}
 }
+
+// Command processes a command
 func (kvm *Clone) Command(m finn.Applier, conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
 	switch strings.ToLower(string(cmd.Args[0])) {
 	default:
@@ -187,6 +191,7 @@ func (kvm *Clone) Command(m finn.Applier, conn redcon.Conn, cmd redcon.Command) 
 	}
 }
 
+// Restore restores a snapshot
 func (kvm *Clone) Restore(rd io.Reader) error {
 	kvm.mu.Lock()
 	defer kvm.mu.Unlock()
@@ -202,6 +207,7 @@ func (kvm *Clone) Restore(rd io.Reader) error {
 	return nil
 }
 
+// Snapshot creates a snapshot
 func (kvm *Clone) Snapshot(wr io.Writer) error {
 	kvm.mu.RLock()
 	defer kvm.mu.RUnlock()

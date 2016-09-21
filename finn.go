@@ -116,7 +116,7 @@ const (
 	Warning LogLevel = 1
 )
 
-// Options are used to provide a Node with optional funtionality.
+// Options are used to provide a Node with optional functionality.
 type Options struct {
 	// Consistency is the raft consistency level for reads.
 	// Default is Medium
