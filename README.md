@@ -14,7 +14,7 @@ Finn is a fast and simple framework for building [Raft](https://raft.github.io/)
 The reason for this project is to add Raft support to a future release of [BuntDB](https://github.com/tidwall/buntdb) and [Tile38](https://github.com/tidwall/tile38).
 
 Features
-========
+--------
 
 - Simple API for quickly creating a [fault-tolerant](https://en.wikipedia.org/wiki/Fault_tolerance) cluster
 - Optional [backends](#log-backends) for log persistence. [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog)
