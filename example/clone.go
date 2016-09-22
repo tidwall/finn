@@ -58,7 +58,7 @@ func main() {
 	}
 	switch strings.ToLower(consistency) {
 	default:
-		log.Fatalf("invalid durability '%v'", consistency)
+		log.Fatalf("invalid consistency '%v'", consistency)
 	case "low":
 		opts.Consistency = finn.Low
 	case "medium":
