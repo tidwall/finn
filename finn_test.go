@@ -341,7 +341,7 @@ func SubTestRemovePeer(t *testing.T, basePort int, opts *Options) {
 	baseAddr := fmt.Sprintf(":%d", basePort)
 	testDo(t, basePort, 1, "TRY "+baseAddr, "raftremovepeer", fmt.Sprintf(":%d3", basePort/10))
 	testDo(t, basePort, 0, "OK", "raftremovepeer", fmt.Sprintf(":%d3", basePort/10))
-	testDo(t, basePort, 0, "ERR peer is unknown", "raftremovepeer", fmt.Sprintf(":%d3", basePort/10))
+	testDo(t, basePort, 0, "peer is unknown", "raftremovepeer", fmt.Sprintf(":%d3", basePort/10))
 }
 
 func BenchmarkCluster(t *testing.B) {

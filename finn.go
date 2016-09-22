@@ -133,6 +133,16 @@ type Options struct {
 	// LogOutput is the log writer
 	// Default is os.Stderr
 	LogOutput io.Writer
+	// Accept is an optional function that can be used to
+	// accept or deny a connection. It fires when new client
+	// connections are created.
+	// Return false to deny the connection.
+	ConnAccept func(redcon.Conn) bool
+	// ConnClosed is an optional function that fires
+	// when client connections are closed.
+	// If there was a network error, then the error will be
+	// passed in as an argument.
+	ConnClosed func(redcon.Conn, error)
 }
 
 // fillOptions fills in default options
@@ -335,7 +345,7 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 			} else {
 				conn.WriteError("ERR raft not ready")
 			}
-		}, nil, nil,
+		}, opts.ConnAccept, opts.ConnClosed,
 		n.log.Sub('L'),
 	)
 	if err != nil {
@@ -369,8 +379,9 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 					return nil, fmt.Errorf("failed to join node at %v: %v", join, err)
 
 				// below are a few errors that we should consider OK.
-				case "ERR raft not ready",
-					"ERR leader not known",
+				case
+					"ERR raft not ready",
+					//"ERR leader not known",
 					"ERR leadership lost while committing log":
 					n.log.Warningf("join node at %v: %v", join, err)
 				}
@@ -462,7 +473,7 @@ func (n *Node) doCommand(conn redcon.Conn, cmd redcon.Command) (interface{}, err
 				conn.WriteError("TRY " + leader)
 			}
 		} else {
-			conn.WriteError("ERR " + strings.TrimSpace(strings.Split(err.Error(), "\n")[0]))
+			conn.WriteError(strings.TrimSpace(strings.Split(err.Error(), "\n")[0]))
 		}
 	}
 	return val, err
