@@ -411,6 +411,11 @@ func (n *Node) Close() error {
 	return nil
 }
 
+// Log returns the active logger for printing messages
+func (n *Node) Log() Logger {
+	return n.mlog
+}
+
 // leader returns the client address for the leader
 func (n *Node) leader() string {
 	return n.raft.Leader()
@@ -702,7 +707,7 @@ func (m *nodeApplier) Apply(
 
 // Log returns the active logger for printing messages
 func (m *nodeApplier) Log() Logger {
-	return (*Node)(m).mlog
+	return (*Node)(m).Log()
 }
 
 // nodeFSM exposes the raft.FSM interface of the Node type
