@@ -26,7 +26,7 @@ var (
 	// ErrUnknownCommand is returned when the command is not known.
 	ErrUnknownCommand = errors.New("unknown command")
 	// ErrWrongNumberOfArguments is returned when the number of arguments is wrong.
-	ErrWrongNumberOfArguments = errors.New("wrong number or arguments")
+	ErrWrongNumberOfArguments = errors.New("wrong number of arguments")
 	// ErrDisabled is returned when a feature is disabled.
 	ErrDisabled = errors.New("disabled")
 )
