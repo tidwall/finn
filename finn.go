@@ -368,23 +368,13 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	for {
 		if join != "" && len(peers) == 0 {
 			if err := reqRaftJoin(join, n.addr); err != nil {
-				switch err.Error() {
-				default:
-					if strings.HasPrefix(err.Error(), "TRY ") {
-						// we received a "TRY addr" response. let forward the join to
-						// the specified address"
-						join = strings.Split(err.Error(), " ")[1]
-						continue
-					}
-					return nil, fmt.Errorf("failed to join node at %v: %v", join, err)
-
-				// below are a few errors that we should consider OK.
-				case
-					"ERR raft not ready",
-					//"ERR leader not known",
-					"ERR leadership lost while committing log":
-					n.log.Warningf("join node at %v: %v", join, err)
+				if strings.HasPrefix(err.Error(), "TRY ") {
+					// we received a "TRY addr" response. let forward the join to
+					// the specified address"
+					join = strings.Split(err.Error(), " ")[1]
+					continue
 				}
+				return nil, fmt.Errorf("failed to join node at %v: %v", join, err)
 			}
 		}
 		break
