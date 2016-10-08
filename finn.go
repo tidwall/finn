@@ -423,6 +423,40 @@ func reqRaftJoin(join, raftAddr string) error {
 	return nil
 }
 
+// scanForErrors returns pipeline errors. All messages must be errors
+func scanForErrors(buf []byte) [][]byte {
+	var res [][]byte
+	for len(buf) > 0 {
+		if buf[0] != '-' {
+			return nil
+		}
+		buf = buf[1:]
+		for i := 0; i < len(buf); i++ {
+			if buf[i] == '\n' && i > 0 && buf[i-1] == '\r' {
+				res = append(res, buf[:i-1])
+				buf = buf[i+1:]
+				break
+			}
+		}
+	}
+	return res
+}
+
+func (n *Node) translateError(err error, cmd string) string {
+	if err.Error() == ErrDisabled.Error() || err.Error() == ErrUnknownCommand.Error() {
+		return "ERR unknown command '" + cmd + "'"
+	} else if err.Error() == ErrWrongNumberOfArguments.Error() {
+		return "ERR wrong number of arguments for '" + cmd + "' command"
+	} else if err.Error() == raft.ErrNotLeader.Error() {
+		leader := n.raft.Leader()
+		if leader == "" {
+			return "ERR leader not known"
+		}
+		return "TRY " + leader
+	}
+	return strings.TrimSpace(strings.Split(err.Error(), "\n")[0])
+}
+
 // doCommand executes a client command which is processed through the raft pipeline.
 func (n *Node) doCommand(conn redcon.Conn, cmd redcon.Command) (interface{}, error) {
 	if len(cmd.Args) == 0 {
@@ -456,20 +490,19 @@ func (n *Node) doCommand(conn redcon.Conn, cmd redcon.Command) (interface{}, err
 		val, err = n.doPing(conn, cmd)
 	}
 	if err != nil && conn != nil {
-		if err == ErrUnknownCommand {
-			conn.WriteError("ERR unknown command '" + string(cmd.Args[0]) + "'")
-		} else if err == ErrWrongNumberOfArguments {
-			conn.WriteError("ERR wrong number of arguments for '" + string(cmd.Args[0]) + "' command")
-		} else if err == raft.ErrNotLeader {
-			leader := n.raft.Leader()
-			if leader == "" {
-				conn.WriteError("ERR leader not known")
-			} else {
-				conn.WriteError("TRY " + leader)
+		// it's possible that this was a pipelined response.
+		wr := redcon.BaseWriter(conn)
+		if wr != nil {
+			buf := wr.Buffer()
+			rerrs := scanForErrors(buf)
+			if len(rerrs) > 0 {
+				wr.SetBuffer(nil)
+				for _, rerr := range rerrs {
+					conn.WriteError(n.translateError(errors.New(string(rerr)), string(cmd.Args[0])))
+				}
 			}
-		} else {
-			conn.WriteError(strings.TrimSpace(strings.Split(err.Error(), "\n")[0]))
 		}
+		conn.WriteError(n.translateError(err, string(cmd.Args[0])))
 	}
 	return val, err
 }
