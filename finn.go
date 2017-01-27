@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/tidwall/raft-boltdb"
 	"github.com/tidwall/raft-fastlog"
+	raftleveldb "github.com/tidwall/raft-leveldb"
 	"github.com/tidwall/raft-redcon"
 	"github.com/tidwall/redcon"
 	"github.com/tidwall/redlog"
@@ -81,11 +82,13 @@ type Backend int
 const (
 	// FastLog is a persistent in-memory raft log.
 	// This is the default.
-	FastLog Backend = 0
+	FastLog Backend = iota
 	// Bolt is a persistent disk raft log.
-	Bolt Backend = 1
+	Bolt
 	// InMem is a non-persistent in-memory raft log.
-	InMem Backend = 2
+	InMem
+	// LevelDB is a persistent disk raft log.
+	LevelDB
 )
 
 // String returns a string representation of the Backend
@@ -99,6 +102,8 @@ func (b Backend) String() string {
 		return "bolt"
 	case InMem:
 		return "inmem"
+	case LevelDB:
+		return "leveldb"
 	}
 }
 
@@ -271,6 +276,21 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	if opts.Backend == Bolt {
 		opts.Durability = High
 		store, err = raftboltdb.NewBoltStore(filepath.Join(dir, "raft.db"))
+		if err != nil {
+			return nil, err
+		}
+	} else if opts.Backend == LevelDB {
+		var dur raftleveldb.Level
+		switch opts.Durability {
+		default:
+			dur = raftleveldb.Medium
+			opts.Durability = Medium
+		case High:
+			dur = raftleveldb.High
+		case Low:
+			dur = raftleveldb.Low
+		}
+		store, err = raftleveldb.NewLevelDBStore(filepath.Join(dir, "raft.db"), dur)
 		if err != nil {
 			return nil, err
 		}

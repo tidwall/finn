@@ -212,6 +212,10 @@ func SubTestBackend(t *testing.T) {
 	if backend.String() != "bolt" {
 		t.Fatalf("expecting '%v', got '%v'", "bolt", backend.String())
 	}
+	backend = LevelDB
+	if backend.String() != "leveldb" {
+		t.Fatalf("expecting '%v', got '%v'", "leveldb", backend.String())
+	}
 	backend = InMem
 	if backend.String() != "inmem" {
 		t.Fatalf("expecting '%v', got '%v'", "inmem", backend.String())
@@ -221,7 +225,7 @@ func SubTestBackend(t *testing.T) {
 func TestCluster(t *testing.T) {
 
 	var optsArr []Options
-	for _, backend := range []Backend{Bolt, FastLog, InMem} {
+	for _, backend := range []Backend{LevelDB, Bolt, FastLog, InMem} {
 		for _, consistency := range []Level{Low, Medium, High} {
 			optsArr = append(optsArr, Options{
 				Backend:     backend,
@@ -292,7 +296,7 @@ func SubTestPing(t *testing.T, basePort int, opts *Options) {
 
 func SubTestRaftShrinkLog(t *testing.T, basePort int, opts *Options) {
 	for i := 0; i < 3; i++ {
-		if opts.Backend == Bolt {
+		if opts.Backend == Bolt || opts.Backend == LevelDB {
 			testDo(t, basePort, i, "ERR log is not shrinkable", "raftshrinklog")
 		} else {
 			testDo(t, basePort, i, "OK", "raftshrinklog")

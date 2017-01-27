@@ -11,7 +11,7 @@
 
 
 
-Finn is a fast and simple framework for building [Raft](https://raft.github.io/) implementations in Go. It uses [Redcon](https://github.com/tidwall/redcon) for the network transport and [Hashicorp Raft](https://github.com/hashicorp/raft). There is also the option to use [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog) for log persistence.
+Finn is a fast and simple framework for building [Raft](https://raft.github.io/) implementations in Go. It uses [Redcon](https://github.com/tidwall/redcon) for the network transport and [Hashicorp Raft](https://github.com/hashicorp/raft). There is also the option to use [LevelDB](https://github.com/syndtr/goleveldb), [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog) for log persistence.
 
 The reason for this project is to add Raft support to a future release of [BuntDB](https://github.com/tidwall/buntdb) and [Tile38](https://github.com/tidwall/tile38).
 
@@ -20,7 +20,7 @@ Features
 
 - Simple API for quickly creating a [fault-tolerant](https://en.wikipedia.org/wiki/Fault_tolerance) cluster
 - Fast network protocol using the [raft-redcon](https://github.com/tidwall/raft-redcon) transport
-- Optional [backends](#log-backends) for log persistence. [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog)
+- Optional [backends](#log-backends) for log persistence. [LevelDB](https://github.com/syndtr/goleveldb), [BoltDB](https://github.com/boltdb/bolt), or [FastLog](https://github.com/tidwall/raft-fastlog)
 - Adjustable [consistency and durability](#consistency-and-durability) levels
 - A [full-featured example](#full-featured-example) to help jumpstart integration
 - [Built-in raft commands](#built-in-raft-commands) for monitoring and managing the cluster
@@ -338,8 +338,9 @@ Log Backends
 ------------
 Finn supports the following log databases.
 
-- [FastLog](https://github.com/tidwall/raft-fastlog) - log is stored in memory and persists to disk, fast, log is limited to the amount of server memory.
-- [Bolt](https://github.com/boltdb/bolt) - log is stored only to disk, slower, supports larger logs.
+- [FastLog](https://github.com/tidwall/raft-fastlog) - log is stored in memory and persists to disk, very fast reads and writes, log is limited to the amount of server memory.
+- [LevelDB](https://github.com/syndtr/goleveldb) - log is stored only to disk, supports large logs.
+- [Bolt](https://github.com/boltdb/bolt) - log is stored only to disk, supports large logs.
 
 Contact
 -------
