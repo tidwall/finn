@@ -424,6 +424,11 @@ func (n *Node) Close() error {
 	return nil
 }
 
+// Store returns the underlying storage object.
+func (n *Node) Store() interface{} {
+	return n.store
+}
+
 func (n *Node) watchPeers() {
 	buf := make([]byte, 1024)
 	for {
