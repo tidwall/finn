@@ -2,9 +2,12 @@
 package finn
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,7 +20,7 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/tidwall/raft-boltdb"
 	"github.com/tidwall/raft-fastlog"
-	raftleveldb "github.com/tidwall/raft-leveldb"
+	"github.com/tidwall/raft-leveldb"
 	"github.com/tidwall/raft-redcon"
 	"github.com/tidwall/redcon"
 	"github.com/tidwall/redlog"
@@ -37,6 +40,7 @@ var (
 	errInvalidConsistencyLevel = errors.New("invalid consistency level")
 	errSyntaxError             = errors.New("syntax error")
 	errInvalidResponse         = errors.New("invalid response")
+	errInvalidNodeID           = errors.New("invalid node id")
 )
 
 const (
@@ -200,19 +204,19 @@ type Machine interface {
 
 // Node represents a Raft server node.
 type Node struct {
-	mu       sync.RWMutex
-	addr     string
-	snapshot raft.SnapshotStore
-	trans    *raftredcon.RedconTransport
-	raft     *raft.Raft
-	log      *redlog.Logger // the node logger
-	mlog     *redlog.Logger // the machine logger
-	closed   bool
-	opts     *Options
-	level    Level
-	handler  Machine
-	store    bigStore
-	peers    map[string]string
+	mu        sync.RWMutex
+	addr      raft.ServerAddress
+	snapshot  raft.SnapshotStore
+	transport *raftredcon.RedconTransport
+	raft      *raft.Raft
+	log       *redlog.Logger // the node logger
+	mlog      *redlog.Logger // the machine logger
+	closed    bool
+	opts      *Options
+	level     Level
+	handler   Machine
+	store     bigStore
+	peers     map[string]string
 }
 
 // bigStore represents a raft store that conforms to
@@ -234,7 +238,7 @@ type bigStore interface {
 }
 
 // Open opens a Raft node and returns the Node to the caller.
-func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, err error) {
+func Open(id, dir, addr, join string, handler Machine, opts *Options) (node *Node, err error) {
 	opts = fillOptions(opts)
 	log := redlog.New(opts.LogOutput).Sub('N')
 	log.SetFilter(redlog.HashicorpRaftFilter)
@@ -261,6 +265,27 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
+
+	id = strings.TrimSpace(id)
+	if id == "" {
+		data, err := ioutil.ReadFile(filepath.Join(dir, "node.id"))
+		id = strings.TrimSpace(string(data))
+		if os.IsNotExist(err) || id == "" {
+			var data [4]byte
+			if _, err := rand.Read(data[:]); err != nil {
+				panic("random error: " + err.Error())
+			}
+			id = hex.EncodeToString(data[:])[:7]
+			err = ioutil.WriteFile(filepath.Join(dir, "node.id"), []byte(id+"\n"), 0600)
+			if err != nil {
+				return nil, err
+			}
+		} else if err != nil {
+			return nil, err
+		}
+	}
+
+	log.Printf("Using local node ID: %s", id)
 
 	// create a node and assign it some fields
 	n := &Node{
@@ -328,18 +353,6 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 		return nil, err
 	}
 
-	// Setup Raft configuration.
-	config := raft.DefaultConfig()
-	config.LogOutput = n.log
-
-	// Allow the node to enter single-mode, potentially electing itself, if
-	// explicitly enabled and there is only 1 node in the cluster already.
-	if join == "" && len(peers) <= 1 {
-		n.log.Noticef("Enable single node")
-		config.EnableSingleNode = true
-		config.DisableBootstrapAfterElect = false
-	}
-
 	// create the snapshot store. This allows the Raft to truncate the log.
 	n.snapshot, err = raft.NewFileSnapshotStore(dir, retainSnapshotCount, n.log)
 	if err != nil {
@@ -358,8 +371,8 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	var doReady uint64
 
 	// start the raft server
-	n.addr = taddr.String()
-	n.trans, err = raftredcon.NewRedconTransport(
+	n.addr = raft.ServerAddress(taddr.String())
+	n.transport, err = raftredcon.NewRedconTransport(
 		n.addr,
 		func(conn redcon.Conn, cmd redcon.Command) {
 			if atomic.LoadUint64(&doReady) != 0 {
@@ -375,12 +388,32 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 		return nil, err
 	}
 
+	// Setup Raft configuration.
+	config := raft.DefaultConfig()
+	config.LogOutput = n.log
+	config.LocalID = raft.ServerID(id)
+
 	// Instantiate the Raft systems.
 	n.raft, err = raft.NewRaft(config, (*nodeFSM)(n),
-		n.store, n.store, n.snapshot, n.store, n.trans)
+		n.store, n.store, n.snapshot, n.transport)
 	if err != nil {
 		n.Close()
 		return nil, err
+	}
+
+	// Allow the node to enter single-mode, potentially electing itself, if
+	// explicitly enabled and there is only 1 node in the cluster already.
+	if join == "" && len(peers) <= 1 {
+		n.log.Noticef("Enable single node")
+		configuration := raft.Configuration{
+			Servers: []raft.Server{
+				{
+					ID:      config.LocalID,
+					Address: n.transport.LocalAddr(),
+				},
+			},
+		}
+		n.raft.BootstrapCluster(configuration)
 	}
 
 	// set the atomic flag which indicates that we can accept Redcon commands.
@@ -389,7 +422,7 @@ func Open(dir, addr, join string, handler Machine, opts *Options) (node *Node, e
 	// if --join was specified, make the join request.
 	for {
 		if join != "" && len(peers) == 0 {
-			if err := reqRaftJoin(join, n.addr); err != nil {
+			if err := reqRaftJoin(raft.ServerAddress(join), n.addr); err != nil {
 				if strings.HasPrefix(err.Error(), "TRY ") {
 					// we received a "TRY addr" response. let forward the join to
 					// the specified address"
@@ -413,8 +446,8 @@ func (n *Node) Close() error {
 	if n.raft != nil {
 		n.raft.Shutdown().Error()
 	}
-	if n.trans != nil {
-		n.trans.Close()
+	if n.transport != nil {
+		n.transport.Close()
 	}
 	// close the raft database
 	if n.store != nil {
@@ -497,12 +530,12 @@ func (n *Node) Log() Logger {
 }
 
 // leader returns the client address for the leader
-func (n *Node) leader() string {
+func (n *Node) leader() raft.ServerAddress {
 	return n.raft.Leader()
 }
 
 // reqRaftJoin does a remote "RAFTJOIN" command at the specified address.
-func reqRaftJoin(join, raftAddr string) error {
+func reqRaftJoin(join raft.ServerAddress, raftAddr raft.ServerAddress) error {
 	resp, _, err := raftredcon.Do(join, nil, []byte("raftaddpeer"), []byte(raftAddr))
 	if err != nil {
 		return err
@@ -542,7 +575,7 @@ func (n *Node) translateError(err error, cmd string) string {
 		if leader == "" {
 			return "ERR leader not known"
 		}
-		return "TRY " + leader
+		return "TRY " + string(leader)
 	}
 	return strings.TrimSpace(strings.Split(err.Error(), "\n")[0])
 }
@@ -621,7 +654,7 @@ func (n *Node) doRaftLeader(conn redcon.Conn, cmd redcon.Command) (interface{}, 
 	if leader == "" {
 		conn.WriteNull()
 	} else {
-		conn.WriteBulkString(leader)
+		conn.WriteBulkString(string(leader))
 	}
 	return nil, nil
 }
@@ -731,7 +764,7 @@ func (n *Node) doRaftAddPeer(conn redcon.Conn, cmd redcon.Command) (interface{},
 		return nil, ErrWrongNumberOfArguments
 	}
 	n.log.Noticef("Received add peer request from %v", string(cmd.Args[1]))
-	f := n.raft.AddPeer(string(cmd.Args[1]))
+	f := n.raft.AddPeer(raft.ServerAddress(string(cmd.Args[1])))
 	if f.Error() != nil {
 		return nil, f.Error()
 	}
@@ -746,7 +779,7 @@ func (n *Node) doRaftRemovePeer(conn redcon.Conn, cmd redcon.Command) (interface
 		return nil, ErrWrongNumberOfArguments
 	}
 	n.log.Noticef("Received remove peer request from %v", string(cmd.Args[1]))
-	f := n.raft.RemovePeer(string(cmd.Args[1]))
+	f := n.raft.RemovePeer(raft.ServerAddress(string(cmd.Args[1])))
 	if f.Error() != nil {
 		return nil, f.Error()
 	}

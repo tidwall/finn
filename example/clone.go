@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -17,15 +16,17 @@ import (
 )
 
 func main() {
-	var port int
+	var addr string
 	var backend string
 	var durability string
 	var consistency string
 	var loglevel string
 	var join string
 	var dir string
+	var id string
 
-	flag.IntVar(&port, "p", 7481, "Bind port")
+	flag.StringVar(&id, "id", "", "Node ID")
+	flag.StringVar(&addr, "addr", ":7481", "Bind addr")
 	flag.StringVar(&backend, "backend", "fastlog", "Raft log backend [fastlog,bolt,inmem]")
 	flag.StringVar(&durability, "durability", "medium", "Log durability [low,medium,high]")
 	flag.StringVar(&consistency, "consistency", "medium", "Raft consistency [low,medium,high]")
@@ -80,11 +81,9 @@ func main() {
 	case "debug":
 		opts.LogLevel = finn.Debug
 	}
-	n, err := finn.Open(dir, fmt.Sprintf(":%d", port), join, NewClone(), &opts)
+	n, err := finn.Open(id, dir, addr, join, NewClone(), &opts)
 	if err != nil {
-		if opts.LogOutput == ioutil.Discard {
-			log.Fatal(err)
-		}
+		log.Fatal(err)
 	}
 	defer n.Close()
 	select {}
