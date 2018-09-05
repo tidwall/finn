@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/raft"
+	"github.com/tidwall/raft"
 	"github.com/tidwall/raft-boltdb"
 	"github.com/tidwall/raft-fastlog"
 	raftleveldb "github.com/tidwall/raft-leveldb"
