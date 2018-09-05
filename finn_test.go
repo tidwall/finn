@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/raft"
-
 	"github.com/tidwall/raft-redcon"
 	"github.com/tidwall/redcon"
 )
@@ -122,8 +120,7 @@ func startTestNode(t testing.TB, basePort int, num int, opts *Options) {
 	if node != "0" {
 		join = fmt.Sprintf(":%d", basePort)
 	}
-
-	n, err := Open("", "data/"+node, addr, join, NewKVM(), opts)
+	n, err := Open("data/"+node, addr, join, NewKVM(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +144,7 @@ func waitFor(t testing.TB, basePort, node int) {
 			t.Fatal("timeout looking for leader")
 		}
 		time.Sleep(time.Second / 4)
-		resp, _, err := raftredcon.Do(raft.ServerAddress(target), nil, []byte("raftleader"))
+		resp, _, err := raftredcon.Do(target, nil, []byte("raftleader"))
 		if err != nil {
 			continue
 		}
@@ -163,7 +160,7 @@ func testDo(t testing.TB, basePort, node int, expect string, args ...string) str
 		bargs = append(bargs, []byte(arg))
 	}
 	target := fmt.Sprintf(":%d", basePort/10*10+node)
-	resp, _, err := raftredcon.Do(raft.ServerAddress(target), nil, bargs...)
+	resp, _, err := raftredcon.Do(target, nil, bargs...)
 	if err != nil {
 		if err.Error() == expect {
 			return ""
