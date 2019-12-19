@@ -277,8 +277,8 @@ $ redis-cli -p 7481 GET mykey
 
 Adding members:
 ```
-go run example/clone.go -p 7482 -dir data2 -join 7481
-go run example/clone.go -p 7483 -dir data3 -join 7481
+go run example/clone.go -p 7482 -dir data2 -join :7481
+go run example/clone.go -p 7483 -dir data3 -join :7481
 ```
 
 That's it. Now if node1 goes down, node2 and node3 will continue to operate.
