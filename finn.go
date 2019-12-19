@@ -14,11 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tidwall/raft"
-	"github.com/tidwall/raft-boltdb"
-	"github.com/tidwall/raft-fastlog"
+	"github.com/hashicorp/raft"
+	raftboltdb "github.com/tidwall/raft-boltdb"
+	raftfastlog "github.com/tidwall/raft-fastlog"
 	raftleveldb "github.com/tidwall/raft-leveldb"
-	"github.com/tidwall/raft-redcon"
+	raftredcon "github.com/tidwall/raft-redcon"
 	"github.com/tidwall/redcon"
 	"github.com/tidwall/redlog"
 )
