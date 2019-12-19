@@ -9,6 +9,7 @@ require (
 	github.com/hashicorp/go-msgpack v0.5.5 // indirect
 	github.com/hashicorp/raft v0.1.0
 	github.com/syndtr/goleveldb v1.0.0 // indirect
+	github.com/tidwall/match v1.0.1 // indirect
 	github.com/tidwall/raft-boltdb v0.0.0-20160909211738-25b87f2c5677
 	github.com/tidwall/raft-fastlog v0.0.0-20160922202426-2f0d0a0ce558
 	github.com/tidwall/raft-leveldb v0.0.0-20170127185243-ada471496dc9

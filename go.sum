@@ -52,6 +52,8 @@ github.com/stretchr/testify v1.2.2/go.mod h1:a8OnRcib4nhh0OaRAV+Yts87kKdq0PP7pXf
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/syndtr/goleveldb v1.0.0 h1:fBdIW9lB4Iz0n9khmH8w27SJ3QEJ7+IgjPEwGSZiFdE=
 github.com/syndtr/goleveldb v1.0.0/go.mod h1:ZVVdQEZoIme9iO1Ch2Jdy24qqXrMMOU6lpPAyBWyWuQ=
+github.com/tidwall/match v1.0.1 h1:PnKP62LPNxHKTwvHHZZzdOAOCtsJTjo6dZLCwpKm5xc=
+github.com/tidwall/match v1.0.1/go.mod h1:LujAq0jyVjBy028G1WhWfIzbpQfMO8bBZ6Tyb0+pL9E=
 github.com/tidwall/raft v1.0.0 h1:XuXkumePQBVcBYtfC57f7dXRM4WBZei3lZkK06+0D8I=
 github.com/tidwall/raft v1.0.0/go.mod h1:uMALL7ToL5LoHWCGwLE1uROh9W0ormbwrdxg2uSo7Oo=
 github.com/tidwall/raft-boltdb v0.0.0-20160909211738-25b87f2c5677 h1:8FkXr+GCV4wb8WAct/V1vKB/Ivy11Y+fm919EHgdfWA=
