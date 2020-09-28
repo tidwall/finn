@@ -1,3 +1,5 @@
+**This project has been archived. Please check out [Uhaha](https://github.com/tidwall/uhaha) for a fitter, happier, more productive Raft framework.**
+
 <p align="center">
 <img 
     src="logo.jpg" 
@@ -11,8 +13,6 @@
 
 Finn is a fast and simple framework for building [Raft](https://raft.github.io/) implementations in Go. It uses [Redcon](https://github.com/tidwall/redcon) for the network transport and [Hashicorp Raft](https://github.com/hashicorp/raft). There is also the option to use [LevelDB](https://github.com/syndtr/goleveldb), [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog) for log persistence.
 
-
-*This project has been archived. Please check out [Uhaha](https://github.com/tidwall/uhaha) for a fitter, happier, more productive Raft framework.*
 
 Features
 --------
