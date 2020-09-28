@@ -9,11 +9,10 @@
 <a href="https://godoc.org/github.com/tidwall/finn"><img src="https://img.shields.io/badge/api-reference-blue.svg?style=flat-square" alt="GoDoc"></a>
 </p>
 
-
-
 Finn is a fast and simple framework for building [Raft](https://raft.github.io/) implementations in Go. It uses [Redcon](https://github.com/tidwall/redcon) for the network transport and [Hashicorp Raft](https://github.com/hashicorp/raft). There is also the option to use [LevelDB](https://github.com/syndtr/goleveldb), [BoltDB](https://github.com/boltdb/bolt) or [FastLog](https://github.com/tidwall/raft-fastlog) for log persistence.
 
-The reason for this project is to add Raft support to a future release of [BuntDB](https://github.com/tidwall/buntdb) and [Tile38](https://github.com/tidwall/tile38).
+
+*This project has been archived. Please check out [Uhaha](https://github.com/tidwall/uhaha) for a fitter, happier, more productive Raft framework.*
 
 Features
 --------
