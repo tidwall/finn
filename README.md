@@ -6,7 +6,6 @@
     width="314" height="200" border="0" alt="FINN">
 </p>
 <p align="center">
-<a href="https://travis-ci.org/tidwall/finn"><img src="https://img.shields.io/travis/tidwall/finn.svg?style=flat-square" alt="Build Status"></a>
 <a href="https://goreportcard.com/report/github.com/tidwall/finn"><img src="https://goreportcard.com/badge/github.com/tidwall/finn?style=flat-square" alt="Go Report Card"></a>
 <a href="https://godoc.org/github.com/tidwall/finn"><img src="https://img.shields.io/badge/api-reference-blue.svg?style=flat-square" alt="GoDoc"></a>
 </p>
